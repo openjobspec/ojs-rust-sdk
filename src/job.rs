@@ -148,10 +148,11 @@ pub enum UniqueDimension {
 }
 
 /// Strategy for handling duplicate job conflicts.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConflictStrategy {
     /// Return 409 Conflict, don't enqueue.
+    #[default]
     Reject,
     /// Cancel existing job, enqueue new one.
     Replace,
@@ -159,12 +160,6 @@ pub enum ConflictStrategy {
     ReplaceExceptSchedule,
     /// Silent no-op, return existing job ID.
     Ignore,
-}
-
-impl Default for ConflictStrategy {
-    fn default() -> Self {
-        Self::Reject
-    }
 }
 
 fn default_unique_keys() -> Vec<UniqueDimension> {
@@ -296,7 +291,7 @@ impl Job {
             serde_json::Value::Array(arr) if arr.len() == 1 => {
                 arr[0]
                     .as_object()
-                    .ok_or_else(|| crate::OjsError::Handler(format!("args[0] is not an object")))?
+                    .ok_or_else(|| crate::OjsError::Handler("args[0] is not an object".to_string()))?
             }
             serde_json::Value::Object(map) => map,
             _ => {

@@ -105,19 +105,14 @@ impl RetryPolicy {
 }
 
 /// Action taken when all retry attempts are exhausted.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OnExhaustion {
     /// Discard the job (move to discarded state).
+    #[default]
     Discard,
     /// Move the job to the dead letter queue.
     DeadLetter,
-}
-
-impl Default for OnExhaustion {
-    fn default() -> Self {
-        Self::Discard
-    }
 }
 
 // ---------------------------------------------------------------------------

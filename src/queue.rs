@@ -131,10 +131,11 @@ pub struct CronJob {
 }
 
 /// How to handle overlapping cron runs.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OverlapPolicy {
     /// Don't enqueue if previous run is still active.
+    #[default]
     Skip,
     /// Allow concurrent executions.
     Allow,
@@ -142,12 +143,6 @@ pub enum OverlapPolicy {
     CancelPrevious,
     /// Queue new run to start after previous completes.
     Enqueue,
-}
-
-impl Default for OverlapPolicy {
-    fn default() -> Self {
-        Self::Skip
-    }
 }
 
 /// Request body for registering a cron job.
