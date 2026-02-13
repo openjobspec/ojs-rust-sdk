@@ -23,6 +23,7 @@ pub(crate) struct HttpTransport {
 pub(crate) struct TransportConfig {
     pub auth_token: Option<String>,
     pub headers: HashMap<String, String>,
+    pub timeout: Option<std::time::Duration>,
     #[cfg(feature = "reqwest-transport")]
     pub http_client: Option<reqwest::Client>,
 }
@@ -32,7 +33,12 @@ impl HttpTransport {
         let base_url = base_url.trim_end_matches('/').to_string();
 
         #[cfg(feature = "reqwest-transport")]
-        let client = config.http_client.unwrap_or_else(reqwest::Client::new);
+        let client = config.http_client.unwrap_or_else(|| {
+            let mut builder = reqwest::Client::builder();
+            let timeout = config.timeout.unwrap_or(std::time::Duration::from_secs(30));
+            builder = builder.timeout(timeout);
+            builder.build().expect("failed to build reqwest client")
+        });
 
         Self {
             base_url,

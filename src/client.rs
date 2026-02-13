@@ -35,6 +35,7 @@ pub struct ClientBuilder {
     url: Option<String>,
     auth_token: Option<String>,
     headers: HashMap<String, String>,
+    timeout: Option<Duration>,
     #[cfg(feature = "reqwest-transport")]
     http_client: Option<reqwest::Client>,
 }
@@ -45,6 +46,7 @@ impl ClientBuilder {
             url: None,
             auth_token: None,
             headers: HashMap::new(),
+            timeout: None,
             #[cfg(feature = "reqwest-transport")]
             http_client: None,
         }
@@ -68,6 +70,12 @@ impl ClientBuilder {
         self
     }
 
+    /// Set the request timeout. Defaults to 30 seconds.
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
     /// Provide a custom reqwest HTTP client.
     #[cfg(feature = "reqwest-transport")]
     pub fn http_client(mut self, client: reqwest::Client) -> Self {
@@ -86,6 +94,7 @@ impl ClientBuilder {
             crate::transport::http::TransportConfig {
                 auth_token: self.auth_token,
                 headers: self.headers,
+                timeout: self.timeout,
                 #[cfg(feature = "reqwest-transport")]
                 http_client: self.http_client,
             },
