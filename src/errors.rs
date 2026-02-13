@@ -38,9 +38,13 @@ pub enum OjsError {
     #[error("serialization error: {0}")]
     Serialization(String),
 
-    /// The handler returned an error while processing a job.
+    /// The handler returned a retryable error while processing a job.
     #[error("handler error: {0}")]
     Handler(String),
+
+    /// The handler returned a non-retryable error. The job will not be retried.
+    #[error("non-retryable error: {0}")]
+    NonRetryable(String),
 
     /// Builder misconfiguration.
     #[error("builder error: {0}")]

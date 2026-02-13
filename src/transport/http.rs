@@ -1,7 +1,8 @@
 use crate::errors::{ErrorResponse, OjsError, ServerError};
-use serde::de::DeserializeOwned;
-use serde::Serialize;
+use crate::transport::{Method, Transport};
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 
 const OJS_CONTENT_TYPE: &str = "application/openjobspec+json";
 const OJS_VERSION: &str = "1.0.0-rc.1";
@@ -18,22 +19,12 @@ pub(crate) struct HttpTransport {
 }
 
 /// Configuration used to construct an HttpTransport from client settings.
+#[derive(Default)]
 pub(crate) struct TransportConfig {
     pub auth_token: Option<String>,
     pub headers: HashMap<String, String>,
     #[cfg(feature = "reqwest-transport")]
     pub http_client: Option<reqwest::Client>,
-}
-
-impl Default for TransportConfig {
-    fn default() -> Self {
-        Self {
-            auth_token: None,
-            headers: HashMap::new(),
-            #[cfg(feature = "reqwest-transport")]
-            http_client: None,
-        }
-    }
 }
 
 impl HttpTransport {
@@ -52,19 +43,13 @@ impl HttpTransport {
         }
     }
 
-    /// Build the full URL for a given path (relative to `/ojs/v1`).
     fn url(&self, path: &str) -> String {
         format!("{}{}{}", self.base_url, BASE_PATH, path)
     }
 
-    /// Build the full URL for a path NOT under `/ojs/v1` (e.g., `/ojs/manifest`).
     fn url_raw(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path)
     }
-
-    // -----------------------------------------------------------------------
-    // reqwest-based implementation
-    // -----------------------------------------------------------------------
 
     #[cfg(feature = "reqwest-transport")]
     fn apply_headers(&self, mut req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -85,10 +70,10 @@ impl HttpTransport {
     }
 
     #[cfg(feature = "reqwest-transport")]
-    async fn do_request<T: DeserializeOwned>(
+    async fn execute(
         &self,
         req: reqwest::RequestBuilder,
-    ) -> crate::Result<T> {
+    ) -> crate::Result<Option<serde_json::Value>> {
         let req = self.apply_headers(req);
         let response = req.send().await?;
         let status = response.status();
@@ -100,127 +85,60 @@ impl HttpTransport {
 
         let body = response.bytes().await?;
         if body.is_empty() {
-            // For responses that are expected to be empty, this will fail
-            // unless T can be deserialized from empty. Callers that expect
-            // empty responses should use `do_request_no_body` instead.
-            return Err(OjsError::Serialization(
-                "empty response body".to_string(),
-            ));
+            return Ok(None);
         }
 
-        serde_json::from_slice(&body).map_err(|e| {
+        let value: serde_json::Value = serde_json::from_slice(&body).map_err(|e| {
             OjsError::Serialization(format!(
                 "failed to parse response: {} (body: {})",
                 e,
                 String::from_utf8_lossy(&body)
             ))
+        })?;
+
+        Ok(Some(value))
+    }
+}
+
+#[cfg(feature = "reqwest-transport")]
+impl Transport for HttpTransport {
+    fn request(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+        raw_path: bool,
+    ) -> Pin<Box<dyn Future<Output = crate::Result<Option<serde_json::Value>>> + Send + '_>> {
+        let url = if raw_path {
+            self.url_raw(path)
+        } else {
+            self.url(path)
+        };
+
+        Box::pin(async move {
+            let req = match method {
+                Method::Get => self.client.get(&url),
+                Method::Post => {
+                    let r = self.client.post(&url);
+                    if let Some(body) = &body {
+                        r.body(serde_json::to_vec(body).unwrap_or_default())
+                    } else {
+                        r
+                    }
+                }
+                Method::Delete => self.client.delete(&url),
+                Method::Patch => {
+                    let r = self.client.patch(&url);
+                    if let Some(body) = &body {
+                        r.body(serde_json::to_vec(body).unwrap_or_default())
+                    } else {
+                        r
+                    }
+                }
+            };
+
+            self.execute(req).await
         })
-    }
-
-    #[cfg(feature = "reqwest-transport")]
-    async fn do_request_no_body(&self, req: reqwest::RequestBuilder) -> crate::Result<()> {
-        let req = self.apply_headers(req);
-        let response = req.send().await?;
-        let status = response.status();
-
-        if !status.is_success() {
-            let body = response.bytes().await?;
-            return Err(parse_error_response(&body, status.as_u16()));
-        }
-
-        Ok(())
-    }
-
-    // -----------------------------------------------------------------------
-    // Public transport methods
-    // -----------------------------------------------------------------------
-
-    #[cfg(feature = "reqwest-transport")]
-    pub async fn get<T: DeserializeOwned>(&self, path: &str) -> crate::Result<T> {
-        let url = self.url(path);
-        let req = self.client.get(&url);
-        self.do_request(req).await
-    }
-
-    #[cfg(feature = "reqwest-transport")]
-    pub async fn get_raw<T: DeserializeOwned>(&self, path: &str) -> crate::Result<T> {
-        let url = self.url_raw(path);
-        let req = self.client.get(&url);
-        self.do_request(req).await
-    }
-
-    #[cfg(feature = "reqwest-transport")]
-    pub async fn post<B: Serialize, T: DeserializeOwned>(
-        &self,
-        path: &str,
-        body: &B,
-    ) -> crate::Result<T> {
-        let url = self.url(path);
-        let req = self.client.post(&url).json(body);
-        self.do_request(req).await
-    }
-
-    #[cfg(feature = "reqwest-transport")]
-    pub async fn post_no_response<B: Serialize>(
-        &self,
-        path: &str,
-        body: &B,
-    ) -> crate::Result<()> {
-        let url = self.url(path);
-        let req = self.client.post(&url).json(body);
-        self.do_request_no_body(req).await
-    }
-
-    #[cfg(feature = "reqwest-transport")]
-    pub async fn post_empty<T: DeserializeOwned>(&self, path: &str) -> crate::Result<T> {
-        let url = self.url(path);
-        let req = self.client.post(&url);
-        self.do_request(req).await
-    }
-
-    #[cfg(feature = "reqwest-transport")]
-    pub async fn post_empty_no_response(&self, path: &str) -> crate::Result<()> {
-        let url = self.url(path);
-        let req = self.client.post(&url);
-        self.do_request_no_body(req).await
-    }
-
-    #[cfg(feature = "reqwest-transport")]
-    pub async fn delete<T: DeserializeOwned>(&self, path: &str) -> crate::Result<T> {
-        let url = self.url(path);
-        let req = self.client.delete(&url);
-        self.do_request(req).await
-    }
-
-    #[cfg(feature = "reqwest-transport")]
-    pub async fn delete_no_response(&self, path: &str) -> crate::Result<()> {
-        let url = self.url(path);
-        let req = self.client.delete(&url);
-        self.do_request_no_body(req).await
-    }
-
-    #[cfg(feature = "reqwest-transport")]
-    #[allow(dead_code)]
-    pub async fn patch<B: Serialize, T: DeserializeOwned>(
-        &self,
-        path: &str,
-        body: &B,
-    ) -> crate::Result<T> {
-        let url = self.url(path);
-        let req = self.client.patch(&url).json(body);
-        self.do_request(req).await
-    }
-
-    #[cfg(feature = "reqwest-transport")]
-    #[allow(dead_code)]
-    pub async fn patch_no_response<B: Serialize>(
-        &self,
-        path: &str,
-        body: &B,
-    ) -> crate::Result<()> {
-        let url = self.url(path);
-        let req = self.client.patch(&url).json(body);
-        self.do_request_no_body(req).await
     }
 }
 

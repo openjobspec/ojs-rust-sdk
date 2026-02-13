@@ -1,17 +1,30 @@
 use crate::errors::OjsError;
-use crate::job::{
-    BatchEnqueueRequest, BatchEnqueueResponse, EnqueueRequest, EnqueueResponse, Job,
-};
+use crate::job::{BatchEnqueueRequest, BatchEnqueueResponse, EnqueueRequest, EnqueueResponse, Job};
 use crate::queue::{
     CronJob, CronJobRequest, CronJobsResponse, DeadLetterResponse, HealthStatus, Manifest,
     Pagination, Queue, QueueStats, QueuesResponse,
 };
-use crate::transport::HttpTransport;
-use crate::workflow::{
-    EnqueueOption, Workflow, WorkflowDefinition,
-};
+use crate::transport::{self, DynTransport, HttpTransport};
+use crate::workflow::{EnqueueOption, Workflow, WorkflowDefinition};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
+
+/// Percent-encode a string for use in URL path segments or query values.
+fn url_encode(s: &str) -> String {
+    let mut encoded = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(b as char);
+            }
+            _ => {
+                encoded.push_str(&format!("%{:02X}", b));
+            }
+        }
+    }
+    encoded
+}
 
 // ---------------------------------------------------------------------------
 // Client builder
@@ -78,7 +91,9 @@ impl ClientBuilder {
             },
         );
 
-        Ok(Client { transport })
+        Ok(Client {
+            transport: Arc::new(transport),
+        })
     }
 }
 
@@ -104,13 +119,19 @@ impl ClientBuilder {
 /// ```
 #[derive(Clone, Debug)]
 pub struct Client {
-    transport: HttpTransport,
+    transport: DynTransport,
 }
 
 impl Client {
     /// Create a new client builder.
     pub fn builder() -> ClientBuilder {
         ClientBuilder::new()
+    }
+
+    /// Create a client with a custom transport (for testing or alternative backends).
+    #[allow(dead_code)]
+    pub(crate) fn with_transport(transport: DynTransport) -> Self {
+        Self { transport }
     }
 
     // -----------------------------------------------------------------------
@@ -139,11 +160,7 @@ impl Client {
     ///     .send()
     ///     .await?;
     /// ```
-    pub fn enqueue(
-        &self,
-        job_type: impl Into<String>,
-        args: serde_json::Value,
-    ) -> EnqueueBuilder {
+    pub fn enqueue(&self, job_type: impl Into<String>, args: serde_json::Value) -> EnqueueBuilder {
         EnqueueBuilder {
             client: self.clone(),
             job_type: job_type.into(),
@@ -159,7 +176,7 @@ impl Client {
         let wire_requests: Vec<EnqueueRequest> = requests
             .into_iter()
             .map(|r| {
-                let args = normalize_args(r.args);
+                let args = crate::workflow::normalize_args(&r.args);
                 EnqueueRequest {
                     job_type: r.job_type,
                     args,
@@ -170,22 +187,26 @@ impl Client {
             })
             .collect();
 
-        let resp: BatchEnqueueResponse = self
-            .transport
-            .post("/jobs/batch", &BatchEnqueueRequest { jobs: wire_requests })
-            .await?;
+        let resp: BatchEnqueueResponse = transport::transport_post(
+            &self.transport,
+            "/jobs/batch",
+            &BatchEnqueueRequest {
+                jobs: wire_requests,
+            },
+        )
+        .await?;
 
         Ok(resp.jobs)
     }
 
     /// Get job details by ID.
     pub async fn get_job(&self, id: &str) -> crate::Result<Job> {
-        self.transport.get(&format!("/jobs/{}", id)).await
+        transport::transport_get(&self.transport, &format!("/jobs/{}", id)).await
     }
 
     /// Cancel a job by ID.
     pub async fn cancel_job(&self, id: &str) -> crate::Result<Job> {
-        self.transport.delete(&format!("/jobs/{}", id)).await
+        transport::transport_delete(&self.transport, &format!("/jobs/{}", id)).await
     }
 
     // -----------------------------------------------------------------------
@@ -193,22 +214,19 @@ impl Client {
     // -----------------------------------------------------------------------
 
     /// Create a workflow.
-    pub async fn create_workflow(
-        &self,
-        def: WorkflowDefinition,
-    ) -> crate::Result<Workflow> {
+    pub async fn create_workflow(&self, def: WorkflowDefinition) -> crate::Result<Workflow> {
         let wire = def.to_wire();
-        self.transport.post("/workflows", &wire).await
+        transport::transport_post(&self.transport, "/workflows", &wire).await
     }
 
     /// Get workflow status by ID.
     pub async fn get_workflow(&self, id: &str) -> crate::Result<Workflow> {
-        self.transport.get(&format!("/workflows/{}", id)).await
+        transport::transport_get(&self.transport, &format!("/workflows/{}", id)).await
     }
 
     /// Cancel a workflow by ID.
     pub async fn cancel_workflow(&self, id: &str) -> crate::Result<Workflow> {
-        self.transport.delete(&format!("/workflows/{}", id)).await
+        transport::transport_delete(&self.transport, &format!("/workflows/{}", id)).await
     }
 
     // -----------------------------------------------------------------------
@@ -217,29 +235,34 @@ impl Client {
 
     /// List all queues.
     pub async fn list_queues(&self) -> crate::Result<Vec<Queue>> {
-        let resp: QueuesResponse = self.transport.get("/queues").await?;
+        let resp: QueuesResponse = transport::transport_get(&self.transport, "/queues").await?;
         Ok(resp.queues)
     }
 
     /// Get statistics for a specific queue.
     pub async fn get_queue_stats(&self, name: &str) -> crate::Result<QueueStats> {
-        self.transport
-            .get(&format!("/queues/{}/stats", name))
-            .await
+        let name = url_encode(name);
+        transport::transport_get(&self.transport, &format!("/queues/{}/stats", name)).await
     }
 
     /// Pause a queue (stop dispatching jobs from it).
     pub async fn pause_queue(&self, name: &str) -> crate::Result<()> {
-        self.transport
-            .post_empty_no_response(&format!("/queues/{}/pause", name))
-            .await
+        let name = url_encode(name);
+        transport::transport_post_empty_no_response(
+            &self.transport,
+            &format!("/queues/{}/pause", name),
+        )
+        .await
     }
 
     /// Resume a paused queue.
     pub async fn resume_queue(&self, name: &str) -> crate::Result<()> {
-        self.transport
-            .post_empty_no_response(&format!("/queues/{}/resume", name))
-            .await
+        let name = url_encode(name);
+        transport::transport_post_empty_no_response(
+            &self.transport,
+            &format!("/queues/{}/resume", name),
+        )
+        .await
     }
 
     // -----------------------------------------------------------------------
@@ -253,27 +276,28 @@ impl Client {
         limit: u64,
         offset: u64,
     ) -> crate::Result<(Vec<Job>, Option<Pagination>)> {
-        let resp: DeadLetterResponse = self
-            .transport
-            .get(&format!(
+        let resp: DeadLetterResponse = transport::transport_get(
+            &self.transport,
+            &format!(
                 "/dead-letter?queue={}&limit={}&offset={}",
-                queue, limit, offset
-            ))
-            .await?;
+                url_encode(queue),
+                limit,
+                offset
+            ),
+        )
+        .await?;
         Ok((resp.jobs, resp.pagination))
     }
 
     /// Retry a dead letter job.
     pub async fn retry_dead_letter_job(&self, id: &str) -> crate::Result<Job> {
-        self.transport
-            .post_empty(&format!("/dead-letter/{}/retry", id))
+        transport::transport_post_empty(&self.transport, &format!("/dead-letter/{}/retry", id))
             .await
     }
 
     /// Discard a dead letter job permanently.
     pub async fn discard_dead_letter_job(&self, id: &str) -> crate::Result<()> {
-        self.transport
-            .delete_no_response(&format!("/dead-letter/{}", id))
+        transport::transport_delete_no_response(&self.transport, &format!("/dead-letter/{}", id))
             .await
     }
 
@@ -283,20 +307,19 @@ impl Client {
 
     /// List all registered cron jobs.
     pub async fn list_cron_jobs(&self) -> crate::Result<Vec<CronJob>> {
-        let resp: CronJobsResponse = self.transport.get("/cron").await?;
+        let resp: CronJobsResponse = transport::transport_get(&self.transport, "/cron").await?;
         Ok(resp.cron_jobs)
     }
 
     /// Register a new cron job.
     pub async fn register_cron_job(&self, req: CronJobRequest) -> crate::Result<CronJob> {
-        self.transport.post("/cron", &req).await
+        transport::transport_post(&self.transport, "/cron", &req).await
     }
 
     /// Unregister a cron job by name.
     pub async fn unregister_cron_job(&self, name: &str) -> crate::Result<()> {
-        self.transport
-            .delete_no_response(&format!("/cron/{}", name))
-            .await
+        let name = url_encode(name);
+        transport::transport_delete_no_response(&self.transport, &format!("/cron/{}", name)).await
     }
 
     // -----------------------------------------------------------------------
@@ -305,12 +328,12 @@ impl Client {
 
     /// Check server health.
     pub async fn health(&self) -> crate::Result<HealthStatus> {
-        self.transport.get("/health").await
+        transport::transport_get(&self.transport, "/health").await
     }
 
     /// Get the server's conformance manifest.
     pub async fn manifest(&self) -> crate::Result<Manifest> {
-        self.transport.get_raw("/ojs/manifest").await
+        transport::transport_get_raw(&self.transport, "/ojs/manifest").await
     }
 
     // -----------------------------------------------------------------------
@@ -318,7 +341,7 @@ impl Client {
     // -----------------------------------------------------------------------
 
     #[allow(dead_code)]
-    pub(crate) fn transport(&self) -> &HttpTransport {
+    pub(crate) fn transport(&self) -> &DynTransport {
         &self.transport
     }
 }
@@ -409,7 +432,7 @@ impl EnqueueBuilder {
 
     /// Send the enqueue request.
     pub async fn send(self) -> crate::Result<Job> {
-        let args = normalize_args(self.args);
+        let args = crate::workflow::normalize_args(&self.args);
         let options_wire = crate::workflow::resolve_options(&self.options);
         let meta = self
             .meta
@@ -423,7 +446,8 @@ impl EnqueueBuilder {
             options: options_wire,
         };
 
-        let resp: EnqueueResponse = self.client.transport.post("/jobs", &req).await?;
+        let resp: EnqueueResponse =
+            transport::transport_post(&self.client.transport, "/jobs", &req).await?;
         Ok(resp.job)
     }
 }
@@ -472,18 +496,5 @@ impl JobRequest {
     pub fn with_option(mut self, opt: EnqueueOption) -> Self {
         self.options.push(opt);
         self
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Normalize args into the wire format (JSON array).
-fn normalize_args(args: serde_json::Value) -> serde_json::Value {
-    match args {
-        serde_json::Value::Array(_) => args,
-        obj @ serde_json::Value::Object(_) => serde_json::Value::Array(vec![obj]),
-        other => serde_json::Value::Array(vec![other]),
     }
 }

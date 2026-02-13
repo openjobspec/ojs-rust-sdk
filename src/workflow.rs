@@ -105,16 +105,15 @@ pub(crate) fn resolve_options(opts: &[EnqueueOption]) -> Option<EnqueueOptionsWi
     }
 
     let mut wire = EnqueueOptionsWire::default();
-    let mut has_value = false;
 
     for opt in opts {
-        has_value = true;
         match opt {
             EnqueueOption::Queue(q) => wire.queue = Some(q.clone()),
             EnqueueOption::Priority(p) => wire.priority = Some(*p),
             EnqueueOption::Timeout(d) => wire.timeout_ms = Some(d.as_millis() as u64),
             EnqueueOption::Delay(d) => {
-                wire.delay_until = Some(Utc::now() + chrono::Duration::from_std(*d).unwrap_or_default());
+                wire.delay_until =
+                    Some(Utc::now() + chrono::Duration::from_std(*d).unwrap_or_default());
             }
             EnqueueOption::ScheduledAt(t) => wire.delay_until = Some(*t),
             EnqueueOption::ExpiresAt(t) => wire.expires_at = Some(*t),
@@ -128,7 +127,7 @@ pub(crate) fn resolve_options(opts: &[EnqueueOption]) -> Option<EnqueueOptionsWi
         }
     }
 
-    if has_value { Some(wire) } else { None }
+    Some(wire)
 }
 
 /// Extract meta from enqueue options.
@@ -365,7 +364,7 @@ impl WorkflowDefinition {
 }
 
 /// Normalize args into wire format (JSON array).
-fn normalize_args(args: &serde_json::Value) -> serde_json::Value {
+pub(crate) fn normalize_args(args: &serde_json::Value) -> serde_json::Value {
     match args {
         serde_json::Value::Array(_) => args.clone(),
         obj @ serde_json::Value::Object(_) => serde_json::Value::Array(vec![obj.clone()]),
@@ -491,8 +490,7 @@ mod tests {
     #[test]
     fn test_batch_wire_format() {
         let def = batch(
-            BatchCallbacks::new()
-                .on_complete(Step::new("report", json!({}))),
+            BatchCallbacks::new().on_complete(Step::new("report", json!({}))),
             vec![
                 Step::new("email.send", json!({"to": "a@b.com"})),
                 Step::new("email.send", json!({"to": "c@d.com"})),

@@ -4,7 +4,7 @@ use crate::job::{
     NackRequest,
 };
 use crate::middleware::{BoxFuture, HandlerFn, HandlerResult, Middleware, MiddlewareChain};
-use crate::transport::HttpTransport;
+use crate::transport::{self, DynTransport, HttpTransport};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
 use std::sync::Arc;
@@ -74,7 +74,7 @@ pub struct JobContext {
     pub parent_results: Option<HashMap<String, serde_json::Value>>,
 
     // Internal
-    transport: HttpTransport,
+    transport: DynTransport,
     worker_id: String,
 }
 
@@ -89,7 +89,8 @@ impl JobContext {
             active_jobs: Some(vec![self.job.id.clone()]),
             visibility_timeout_ms: None,
         };
-        let _: HeartbeatResponse = self.transport.post("/workers/heartbeat", &req).await?;
+        let _: HeartbeatResponse =
+            transport::transport_post(&self.transport, "/workers/heartbeat", &req).await?;
         Ok(())
     }
 }
@@ -204,7 +205,7 @@ impl WorkerBuilder {
         let worker_id = generate_worker_id();
 
         Ok(Worker {
-            transport,
+            transport: Arc::new(transport),
             worker_id,
             queues: self.queues,
             concurrency: self.concurrency,
@@ -248,7 +249,7 @@ impl WorkerBuilder {
 /// worker.start().await?;
 /// ```
 pub struct Worker {
-    transport: HttpTransport,
+    transport: DynTransport,
     worker_id: String,
     queues: Vec<String>,
     concurrency: usize,
@@ -289,11 +290,10 @@ impl Worker {
         F: Fn(JobContext) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = HandlerResult> + Send + 'static,
     {
-        let handler: HandlerFn = Arc::new(move |ctx| Box::pin(handler(ctx)) as BoxFuture<'static, HandlerResult>);
-        self.handlers
-            .write()
-            .await
-            .insert(job_type.into(), handler);
+        let handler: HandlerFn =
+            Arc::new(move |ctx| Box::pin(handler(ctx)) as BoxFuture<'static, HandlerResult>);
+        let mut handlers = self.handlers.write().await;
+        handlers.insert(job_type.into(), handler);
     }
 
     /// Add middleware to the worker.
@@ -363,7 +363,7 @@ impl Worker {
                                 visibility_timeout_ms: None,
                             };
 
-                            match transport.post::<_, HeartbeatResponse>("/workers/heartbeat", &req).await {
+                            match transport::transport_post::<_, HeartbeatResponse>(&transport, "/workers/heartbeat", &req).await {
                                 Ok(resp) => {
                                     // Server can direct state changes
                                     match resp.state.as_str() {
@@ -457,14 +457,9 @@ impl Worker {
                         let active_jobs = self.active_jobs.clone();
 
                         join_set.spawn(async move {
-                            let result = process_job(
-                                &transport,
-                                &worker_id,
-                                &handlers,
-                                &middleware,
-                                job,
-                            )
-                            .await;
+                            let result =
+                                process_job(&transport, &worker_id, &handlers, &middleware, job)
+                                    .await;
 
                             // Cleanup
                             active_count.fetch_sub(1, Ordering::SeqCst);
@@ -544,7 +539,8 @@ impl Worker {
             visibility_timeout_ms: None,
         };
 
-        let resp: FetchResponse = self.transport.post("/workers/fetch", &req).await?;
+        let resp: FetchResponse =
+            transport::transport_post(&self.transport, "/workers/fetch", &req).await?;
         Ok(resp.jobs)
     }
 }
@@ -554,7 +550,7 @@ impl Worker {
 // ---------------------------------------------------------------------------
 
 async fn process_job(
-    transport: &HttpTransport,
+    transport: &DynTransport,
     worker_id: &str,
     handlers: &Arc<RwLock<HashMap<String, HandlerFn>>>,
     middleware: &Arc<RwLock<MiddlewareChain>>,
@@ -571,7 +567,7 @@ async fn process_job(
     );
 
     // Look up handler
-    let handler = {
+    let handler: Option<HandlerFn> = {
         let handlers = handlers.read().await;
         handlers.get(&job_type).cloned()
     };
@@ -580,7 +576,14 @@ async fn process_job(
         Some(h) => h,
         None => {
             tracing::error!(job_type = %job_type, "no handler registered");
-            nack_job(transport, &job_id, "handler_error", &format!("no handler registered for job type: {}", job_type)).await?;
+            nack_job(
+                transport,
+                &job_id,
+                "handler_error",
+                &format!("no handler registered for job type: {}", job_type),
+                false,
+            )
+            .await?;
             return Ok(());
         }
     };
@@ -615,11 +618,12 @@ async fn process_job(
         }
         Err(e) => {
             tracing::warn!(job_id = %job_id, error = %e, "job failed");
-            let (code, message) = match &e {
-                OjsError::Handler(msg) => ("handler_error".to_string(), msg.clone()),
-                other => ("handler_error".to_string(), other.to_string()),
+            let (code, message, retryable) = match &e {
+                OjsError::NonRetryable(msg) => ("handler_error".to_string(), msg.clone(), false),
+                OjsError::Handler(msg) => ("handler_error".to_string(), msg.clone(), true),
+                other => ("handler_error".to_string(), other.to_string(), true),
             };
-            nack_job(transport, &job_id, &code, &message).await?;
+            nack_job(transport, &job_id, &code, &message, retryable).await?;
         }
     }
 
@@ -627,37 +631,34 @@ async fn process_job(
 }
 
 async fn ack_job(
-    transport: &HttpTransport,
+    transport: &DynTransport,
     job_id: &str,
     result: serde_json::Value,
 ) -> crate::Result<()> {
     let req = AckRequest {
         job_id: job_id.to_string(),
-        result: if result.is_null() {
-            None
-        } else {
-            Some(result)
-        },
+        result: if result.is_null() { None } else { Some(result) },
     };
-    transport.post_no_response("/workers/ack", &req).await
+    transport::transport_post_no_response(transport, "/workers/ack", &req).await
 }
 
 async fn nack_job(
-    transport: &HttpTransport,
+    transport: &DynTransport,
     job_id: &str,
     code: &str,
     message: &str,
+    retryable: bool,
 ) -> crate::Result<()> {
     let req = NackRequest {
         job_id: job_id.to_string(),
         error: NackError {
             code: code.to_string(),
             message: message.to_string(),
-            retryable: Some(true),
+            retryable: Some(retryable),
             details: None,
         },
     };
-    transport.post_no_response("/workers/nack", &req).await
+    transport::transport_post_no_response(transport, "/workers/nack", &req).await
 }
 
 // ---------------------------------------------------------------------------
@@ -670,5 +671,5 @@ fn generate_worker_id() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    format!("worker_{}_{}",  pid, nanos)
+    format!("worker_{}_{}", pid, nanos)
 }
