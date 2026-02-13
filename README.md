@@ -128,17 +128,18 @@ async fn main() -> ojs::Result<()> {
 ### Middleware
 
 ```rust
-use ojs::{Worker, Middleware, Next, JobContext};
+use ojs::{Worker, Middleware, Next, JobContext, BoxFuture, HandlerResult};
 
 struct LoggingMiddleware;
 
-#[async_trait::async_trait]
 impl Middleware for LoggingMiddleware {
-    async fn handle(&self, ctx: JobContext, next: Next) -> ojs::HandlerResult {
-        let start = std::time::Instant::now();
-        let result = next.run(ctx).await;
-        println!("Job processed in {:?}", start.elapsed());
-        result
+    fn handle(&self, ctx: JobContext, next: Next) -> BoxFuture<'static, HandlerResult> {
+        Box::pin(async move {
+            let start = std::time::Instant::now();
+            let result = next.run(ctx).await;
+            println!("Job processed in {:?}", start.elapsed());
+            result
+        })
     }
 }
 

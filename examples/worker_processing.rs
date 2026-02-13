@@ -3,7 +3,7 @@
 //! Demonstrates how to create a worker, register handlers, add middleware,
 //! and process jobs with graceful shutdown.
 
-use ojs::{JobContext, Middleware, Next, Worker};
+use ojs::{BoxFuture, HandlerResult, JobContext, Middleware, Next, Worker};
 use serde_json::json;
 use std::time::Duration;
 
@@ -13,34 +13,25 @@ use std::time::Duration;
 
 struct LoggingMiddleware;
 
-#[async_trait::async_trait]
 impl Middleware for LoggingMiddleware {
-    async fn handle(
-        &self,
-        ctx: JobContext,
-        next: Next,
-    ) -> ojs::HandlerResult {
-        let job_id = ctx.job.id.clone();
-        let job_type = ctx.job.job_type.clone();
-        let start = std::time::Instant::now();
+    fn handle(&self, ctx: JobContext, next: Next) -> BoxFuture<'static, HandlerResult> {
+        Box::pin(async move {
+            let job_id = ctx.job.id.clone();
+            let job_type = ctx.job.job_type.clone();
+            let start = std::time::Instant::now();
 
-        println!("[LOG] Starting job {} (type: {})", job_id, job_type);
+            println!("[LOG] Starting job {} (type: {})", job_id, job_type);
 
-        let result = next.run(ctx).await;
-        let elapsed = start.elapsed();
+            let result = next.run(ctx).await;
+            let elapsed = start.elapsed();
 
-        match &result {
-            Ok(_) => println!(
-                "[LOG] Job {} completed in {:?}",
-                job_id, elapsed
-            ),
-            Err(e) => println!(
-                "[LOG] Job {} failed in {:?}: {}",
-                job_id, elapsed, e
-            ),
-        }
+            match &result {
+                Ok(_) => println!("[LOG] Job {} completed in {:?}", job_id, elapsed),
+                Err(e) => println!("[LOG] Job {} failed in {:?}: {}", job_id, elapsed, e),
+            }
 
-        result
+            result
+        })
     }
 }
 
@@ -50,7 +41,10 @@ impl Middleware for LoggingMiddleware {
 
 async fn handle_email_send(ctx: JobContext) -> ojs::HandlerResult {
     let to: String = ctx.job.arg("to")?;
-    let subject: String = ctx.job.arg("subject").unwrap_or_else(|_| "No Subject".into());
+    let subject: String = ctx
+        .job
+        .arg("subject")
+        .unwrap_or_else(|_| "No Subject".into());
 
     println!("  Sending email to {} with subject: {}", to, subject);
 
@@ -101,7 +95,9 @@ async fn main() -> ojs::Result<()> {
 
     // Register handlers
     worker.register("email.send", handle_email_send).await;
-    worker.register("report.generate", handle_report_generate).await;
+    worker
+        .register("report.generate", handle_report_generate)
+        .await;
 
     // Inline handler with closure
     worker
