@@ -230,10 +230,10 @@ impl HttpTransport {
 
 fn parse_error_response(body: &[u8], status_code: u16) -> OjsError {
     if let Ok(err_resp) = serde_json::from_slice::<ErrorResponse>(body) {
-        OjsError::Server(err_resp.error.into_server_error(status_code))
+        OjsError::Server(Box::new(err_resp.error.into_server_error(status_code)))
     } else {
         let message = String::from_utf8_lossy(body).to_string();
-        OjsError::Server(ServerError {
+        OjsError::Server(Box::new(ServerError {
             code: format!("http_{}", status_code),
             message: if message.is_empty() {
                 format!("HTTP {}", status_code)
@@ -244,6 +244,6 @@ fn parse_error_response(body: &[u8], status_code: u16) -> OjsError {
             details: None,
             request_id: None,
             http_status: status_code,
-        })
+        }))
     }
 }

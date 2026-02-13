@@ -28,7 +28,7 @@ pub const ERR_ENVELOPE_TOO_LARGE: &str = "envelope_too_large";
 pub enum OjsError {
     /// An error returned by the OJS server.
     #[error("{0}")]
-    Server(#[from] ServerError),
+    Server(Box<ServerError>),
 
     /// HTTP transport error.
     #[error("transport error: {0}")]
@@ -53,6 +53,12 @@ pub enum OjsError {
     /// Worker has been shut down.
     #[error("worker shut down")]
     WorkerShutdown,
+}
+
+impl From<ServerError> for OjsError {
+    fn from(err: ServerError) -> Self {
+        OjsError::Server(Box::new(err))
+    }
 }
 
 #[cfg(feature = "reqwest-transport")]
