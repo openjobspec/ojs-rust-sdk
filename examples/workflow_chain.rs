@@ -7,9 +7,7 @@ use serde_json::json;
 
 #[tokio::main]
 async fn main() -> ojs::Result<()> {
-    let client = Client::builder()
-        .url("http://localhost:8080")
-        .build()?;
+    let client = Client::builder().url("http://localhost:8080").build()?;
 
     // -----------------------------------------------------------------------
     // 1. Chain workflow (sequential execution)
@@ -19,12 +17,18 @@ async fn main() -> ojs::Result<()> {
     let chain_def = chain(vec![
         Step::new("data.fetch", json!({"url": "https://api.example.com/data"})),
         Step::new("data.transform", json!({"format": "csv"})),
-        Step::new("notification.send", json!({"channel": "slack", "message": "Data ready!"})),
+        Step::new(
+            "notification.send",
+            json!({"channel": "slack", "message": "Data ready!"}),
+        ),
     ])
     .name("ETL Pipeline");
 
     let workflow = client.create_workflow(chain_def).await?;
-    println!("Chain workflow created: {} (state: {})", workflow.id, workflow.state);
+    println!(
+        "Chain workflow created: {} (state: {})",
+        workflow.id, workflow.state
+    );
 
     // -----------------------------------------------------------------------
     // 2. Group workflow (parallel execution)
@@ -39,7 +43,10 @@ async fn main() -> ojs::Result<()> {
     .name("Multi-format Export");
 
     let workflow = client.create_workflow(group_def).await?;
-    println!("Group workflow created: {} (state: {})", workflow.id, workflow.state);
+    println!(
+        "Group workflow created: {} (state: {})",
+        workflow.id, workflow.state
+    );
 
     // -----------------------------------------------------------------------
     // 3. Batch workflow (parallel with callbacks)
@@ -57,15 +64,27 @@ async fn main() -> ojs::Result<()> {
                 json!({"channel": "pagerduty", "severity": "warning"}),
             )),
         vec![
-            Step::new("email.send", json!({"to": "user1@example.com", "template": "promo"})),
-            Step::new("email.send", json!({"to": "user2@example.com", "template": "promo"})),
-            Step::new("email.send", json!({"to": "user3@example.com", "template": "promo"})),
+            Step::new(
+                "email.send",
+                json!({"to": "user1@example.com", "template": "promo"}),
+            ),
+            Step::new(
+                "email.send",
+                json!({"to": "user2@example.com", "template": "promo"}),
+            ),
+            Step::new(
+                "email.send",
+                json!({"to": "user3@example.com", "template": "promo"}),
+            ),
         ],
     )
     .name("Email Campaign");
 
     let workflow = client.create_workflow(batch_def).await?;
-    println!("Batch workflow created: {} (state: {})", workflow.id, workflow.state);
+    println!(
+        "Batch workflow created: {} (state: {})",
+        workflow.id, workflow.state
+    );
 
     // -----------------------------------------------------------------------
     // 4. Check workflow status

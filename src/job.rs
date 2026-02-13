@@ -288,11 +288,9 @@ impl Job {
     /// it looks up `key` directly.
     pub fn arg<T: serde::de::DeserializeOwned>(&self, key: &str) -> crate::Result<T> {
         let obj = match &self.args {
-            serde_json::Value::Array(arr) if arr.len() == 1 => {
-                arr[0]
-                    .as_object()
-                    .ok_or_else(|| crate::OjsError::Handler("args[0] is not an object".to_string()))?
-            }
+            serde_json::Value::Array(arr) if arr.len() == 1 => arr[0]
+                .as_object()
+                .ok_or_else(|| crate::OjsError::Handler("args[0] is not an object".to_string()))?,
             serde_json::Value::Object(map) => map,
             _ => {
                 return Err(crate::OjsError::Handler(
@@ -301,9 +299,9 @@ impl Job {
             }
         };
 
-        let value = obj.get(key).ok_or_else(|| {
-            crate::OjsError::Handler(format!("missing argument: {}", key))
-        })?;
+        let value = obj
+            .get(key)
+            .ok_or_else(|| crate::OjsError::Handler(format!("missing argument: {}", key)))?;
 
         serde_json::from_value(value.clone()).map_err(|e| {
             crate::OjsError::Handler(format!("failed to deserialize arg '{}': {}", key, e))
@@ -319,9 +317,8 @@ impl Job {
             serde_json::Value::Array(arr) if arr.len() == 1 => &arr[0],
             other => other,
         };
-        serde_json::from_value(value.clone()).map_err(|e| {
-            crate::OjsError::Handler(format!("failed to deserialize args: {}", e))
-        })
+        serde_json::from_value(value.clone())
+            .map_err(|e| crate::OjsError::Handler(format!("failed to deserialize args: {}", e)))
     }
 }
 

@@ -144,10 +144,7 @@ fn test_chain_workflow_creation() {
 
 #[test]
 fn test_group_workflow_creation() {
-    let def = group(vec![
-        Step::new("a", json!({})),
-        Step::new("b", json!({})),
-    ]);
+    let def = group(vec![Step::new("a", json!({})), Step::new("b", json!({}))]);
 
     assert_eq!(def.steps.len(), 2);
 }
@@ -158,10 +155,7 @@ fn test_batch_workflow_creation() {
         BatchCallbacks::new()
             .on_complete(Step::new("report", json!({})))
             .on_failure(Step::new("alert", json!({}))),
-        vec![
-            Step::new("job.a", json!({})),
-            Step::new("job.b", json!({})),
-        ],
+        vec![Step::new("job.a", json!({})), Step::new("job.b", json!({}))],
     );
 
     assert_eq!(def.steps.len(), 2);

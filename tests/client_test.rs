@@ -11,9 +11,7 @@ fn test_client_builder_requires_url() {
 
 #[test]
 fn test_client_builder_with_url() {
-    let result = Client::builder()
-        .url("http://localhost:8080")
-        .build();
+    let result = Client::builder().url("http://localhost:8080").build();
     assert!(result.is_ok());
 }
 

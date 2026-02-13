@@ -9,13 +9,14 @@ use std::time::Duration;
 #[tokio::main]
 async fn main() -> ojs::Result<()> {
     // Create the client
-    let client = Client::builder()
-        .url("http://localhost:8080")
-        .build()?;
+    let client = Client::builder().url("http://localhost:8080").build()?;
 
     // 1. Simple enqueue (no options)
     let job = client
-        .enqueue("email.send", json!({"to": "user@example.com", "subject": "Welcome!"}))
+        .enqueue(
+            "email.send",
+            json!({"to": "user@example.com", "subject": "Welcome!"}),
+        )
         .await?;
     println!("Enqueued job: {} (state: {:?})", job.id, job.state);
 
@@ -34,9 +35,18 @@ async fn main() -> ojs::Result<()> {
     // 3. Batch enqueue
     let jobs = client
         .enqueue_batch(vec![
-            JobRequest::new("notification.push", json!({"user_id": 1, "message": "Hello"})),
-            JobRequest::new("notification.push", json!({"user_id": 2, "message": "Hello"})),
-            JobRequest::new("notification.push", json!({"user_id": 3, "message": "Hello"})),
+            JobRequest::new(
+                "notification.push",
+                json!({"user_id": 1, "message": "Hello"}),
+            ),
+            JobRequest::new(
+                "notification.push",
+                json!({"user_id": 2, "message": "Hello"}),
+            ),
+            JobRequest::new(
+                "notification.push",
+                json!({"user_id": 3, "message": "Hello"}),
+            ),
         ])
         .await?;
     println!("Batch enqueued {} jobs", jobs.len());
@@ -47,7 +57,10 @@ async fn main() -> ojs::Result<()> {
 
     // 5. Cancel a job
     let cancelled = client.cancel_job(&job.id).await?;
-    println!("Cancelled job: {} (state: {:?})", cancelled.id, cancelled.state);
+    println!(
+        "Cancelled job: {} (state: {:?})",
+        cancelled.id, cancelled.state
+    );
 
     // 6. Health check
     let health = client.health().await?;
