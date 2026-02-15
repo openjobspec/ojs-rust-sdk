@@ -70,8 +70,9 @@ pub mod transport;
 pub mod worker;
 pub mod workflow;
 
-/// OpenTelemetry integration (requires `opentelemetry` feature).
-pub mod otel;
+/// Tracing middleware for structured job processing instrumentation.
+#[cfg(feature = "tracing-middleware")]
+pub mod tracing_mw;
 
 // ---------------------------------------------------------------------------
 // Public re-exports

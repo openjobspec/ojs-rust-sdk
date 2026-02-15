@@ -29,6 +29,7 @@ serde_json = "1"
 [features]
 default = ["reqwest-transport"]
 reqwest-transport = ["dep:reqwest"]
+tracing-middleware = []
 
 [package.metadata.docs.rs]
 all-features = true

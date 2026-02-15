@@ -1,29 +1,32 @@
-//! OpenTelemetry middleware for the OJS Rust SDK.
+//! Tracing middleware for the OJS Rust SDK.
 //!
-//! Provides execution middleware that instruments job processing with
-//! OpenTelemetry traces and metrics, following the OJS Observability spec.
+//! Provides a [`TracingMiddleware`] that instruments job processing with
+//! structured [`tracing`] spans and events. This is compatible with any
+//! `tracing` subscriber, including `tracing-opentelemetry` for bridging
+//! to OpenTelemetry collectors.
+//!
+//! Enable via the `tracing-middleware` feature:
+//!
+//! ```toml
+//! [dependencies]
+//! ojs = { version = "0.1", features = ["tracing-middleware"] }
+//! ```
 //!
 //! # Usage
 //!
-//! ```rust,ignore
-//! use ojs::otel::OpenTelemetryMiddleware;
+//! ```rust,no_run
+//! use ojs::tracing_mw::TracingMiddleware;
+//! use ojs::Worker;
 //!
+//! # fn main() -> ojs::Result<()> {
 //! let worker = Worker::builder()
 //!     .url("http://localhost:8080")
-//!     .middleware(OpenTelemetryMiddleware::new())
 //!     .build()?;
+//!
+//! // worker.use_middleware("tracing", TracingMiddleware::new()).await;
+//! # Ok(())
+//! # }
 //! ```
-//!
-//! # Prerequisites
-//!
-//! Add to `Cargo.toml`:
-//! ```toml
-//! [dependencies]
-//! opentelemetry = "0.22"
-//! opentelemetry_sdk = "0.22"
-//! ```
-//!
-//! See: spec/ojs-observability.md
 
 use std::future::Future;
 use std::pin::Pin;
@@ -32,46 +35,48 @@ use std::time::Instant;
 use crate::middleware::{HandlerResult, Middleware, Next};
 use crate::worker::JobContext;
 
-/// OpenTelemetry middleware that instruments job processing with traces and metrics.
+/// Tracing middleware that instruments job processing with structured spans.
 ///
-/// Creates a CONSUMER span for each job execution and records:
-/// - `ojs.job.completed` (counter)
-/// - `ojs.job.failed` (counter)
-/// - `ojs.job.duration` (histogram, seconds)
-pub struct OpenTelemetryMiddleware {
-    /// Optional custom tracer name. Defaults to "ojs-rust-sdk".
-    tracer_name: String,
+/// Creates an `info_span!("process")` for each job execution with semantic
+/// attributes following OJS conventions. Logs completion/failure as events
+/// with elapsed duration.
+///
+/// For OpenTelemetry integration, combine with the
+/// [`tracing-opentelemetry`](https://docs.rs/tracing-opentelemetry) subscriber
+/// layer.
+pub struct TracingMiddleware {
+    span_name: String,
 }
 
-impl OpenTelemetryMiddleware {
-    /// Creates a new OpenTelemetry middleware with default settings.
+impl TracingMiddleware {
+    /// Creates a new tracing middleware with the default span name `"process"`.
     pub fn new() -> Self {
         Self {
-            tracer_name: "ojs-rust-sdk".to_string(),
+            span_name: "process".to_string(),
         }
     }
 
-    /// Creates a new OpenTelemetry middleware with a custom tracer name.
-    pub fn with_tracer_name(name: impl Into<String>) -> Self {
+    /// Creates a new tracing middleware with a custom span name.
+    pub fn with_span_name(name: impl Into<String>) -> Self {
         Self {
-            tracer_name: name.into(),
+            span_name: name.into(),
         }
     }
 }
 
-impl Default for OpenTelemetryMiddleware {
+impl Default for TracingMiddleware {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Middleware for OpenTelemetryMiddleware {
+impl Middleware for TracingMiddleware {
     fn handle(
         &self,
         ctx: JobContext,
         next: Next,
     ) -> Pin<Box<dyn Future<Output = HandlerResult> + Send + 'static>> {
-        let _tracer_name = self.tracer_name.clone();
+        let _span_name = self.span_name.clone();
         let job_type = ctx.job.job_type.clone();
         let job_id = ctx.job.id.clone();
         let queue = ctx.job.queue.clone();
