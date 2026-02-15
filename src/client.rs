@@ -21,6 +21,7 @@ fn url_encode(s: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Builder for constructing an OJS [`Client`].
+#[must_use = "builders do nothing until `.build()` is called"]
 pub struct ClientBuilder {
     url: Option<String>,
     auth_token: Option<String>,
@@ -81,6 +82,7 @@ impl ClientBuilder {
 
     /// Provide a custom reqwest HTTP client.
     #[cfg(feature = "reqwest-transport")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "reqwest-transport")))]
     pub fn http_client(mut self, client: reqwest::Client) -> Self {
         self.http_client = Some(client);
         self
@@ -117,10 +119,12 @@ impl ClientBuilder {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust,no_run
 /// use ojs::Client;
 /// use serde_json::json;
 ///
+/// # #[tokio::main]
+/// # async fn main() -> ojs::Result<()> {
 /// let client = Client::builder()
 ///     .url("http://localhost:8080")
 ///     .build()?;
@@ -128,6 +132,8 @@ impl ClientBuilder {
 /// let job = client
 ///     .enqueue("email.send", json!({"to": "user@example.com"}))
 ///     .await?;
+/// # Ok(())
+/// # }
 /// ```
 #[derive(Clone, Debug)]
 pub struct Client {
@@ -159,7 +165,14 @@ impl Client {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
+    /// use ojs::{Client, RetryPolicy};
+    /// use serde_json::json;
+    /// use std::time::Duration;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() -> ojs::Result<()> {
+    /// # let client = Client::builder().url("http://localhost:8080").build()?;
     /// // Simple enqueue (no options)
     /// let job = client.enqueue("email.send", json!({"to": "user@example.com"})).await?;
     ///
@@ -170,6 +183,8 @@ impl Client {
     ///     .retry(RetryPolicy::new().max_attempts(5))
     ///     .send()
     ///     .await?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn enqueue(&self, job_type: impl Into<String>, args: serde_json::Value) -> EnqueueBuilder {
         EnqueueBuilder {
@@ -365,6 +380,7 @@ impl Client {
 ///
 /// Created via [`Client::enqueue`]. Can be `.await`ed directly for simple
 /// enqueue, or configured with chained methods and finished with `.send()`.
+#[must_use = "enqueue builders do nothing until `.send()` is called or `.await`ed"]
 pub struct EnqueueBuilder {
     client: Client,
     job_type: String,

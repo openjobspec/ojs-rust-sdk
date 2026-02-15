@@ -1,5 +1,11 @@
 # ojs - Open Job Spec SDK for Rust
 
+[![CI](https://github.com/openjobspec/ojs-rust-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/openjobspec/ojs-rust-sdk/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/ojs.svg)](https://crates.io/crates/ojs)
+[![docs.rs](https://docs.rs/ojs/badge.svg)](https://docs.rs/ojs)
+[![License](https://img.shields.io/crates/l/ojs.svg)](LICENSE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.75-blue.svg)](https://blog.rust-lang.org/2023/12/28/Rust-1.75.0.html)
+
 The official Rust SDK for the [Open Job Spec](https://openjobspec.org) (OJS) protocol. OJS is a language-agnostic specification for background job processing, providing interoperability across languages and backends.
 
 ## Features

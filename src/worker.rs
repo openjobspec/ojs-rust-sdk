@@ -101,6 +101,7 @@ impl JobContext {
 // ---------------------------------------------------------------------------
 
 /// Builder for constructing an OJS [`Worker`].
+#[must_use = "builders do nothing until `.build()` is called"]
 pub struct WorkerBuilder {
     url: Option<String>,
     queues: Vec<String>,
@@ -203,6 +204,7 @@ impl WorkerBuilder {
 
     /// Provide a custom reqwest HTTP client.
     #[cfg(feature = "reqwest-transport")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "reqwest-transport")))]
     pub fn http_client(mut self, client: reqwest::Client) -> Self {
         self.http_client = Some(client);
         self
@@ -253,10 +255,12 @@ impl WorkerBuilder {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust,no_run
 /// use ojs::{Worker, JobContext};
 /// use serde_json::json;
 ///
+/// # #[tokio::main]
+/// # async fn main() -> ojs::Result<()> {
 /// let worker = Worker::builder()
 ///     .url("http://localhost:8080")
 ///     .queues(vec!["default", "email"])
@@ -270,6 +274,8 @@ impl WorkerBuilder {
 /// }).await;
 ///
 /// worker.start().await?;
+/// # Ok(())
+/// # }
 /// ```
 pub struct Worker {
     transport: DynTransport,

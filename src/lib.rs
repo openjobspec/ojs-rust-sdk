@@ -1,3 +1,4 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
 //! # OJS - Open Job Spec SDK for Rust
 //!
 //! The official Rust SDK for the [Open Job Spec](https://openjobspec.org) protocol.
@@ -8,10 +9,12 @@
 //!
 //! ### Enqueuing Jobs (Producer)
 //!
-//! ```rust,ignore
-//! use ojs::Client;
+//! ```rust,no_run
+//! use ojs::{Client, RetryPolicy};
 //! use serde_json::json;
 //!
+//! # #[tokio::main]
+//! # async fn main() -> ojs::Result<()> {
 //! let client = Client::builder()
 //!     .url("http://localhost:8080")
 //!     .build()?;
@@ -26,14 +29,18 @@
 //!     .retry(RetryPolicy::new().max_attempts(5))
 //!     .send()
 //!     .await?;
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! ### Processing Jobs (Consumer)
 //!
-//! ```rust,ignore
+//! ```rust,no_run
 //! use ojs::{Worker, JobContext};
 //! use serde_json::json;
 //!
+//! # #[tokio::main]
+//! # async fn main() -> ojs::Result<()> {
 //! let worker = Worker::builder()
 //!     .url("http://localhost:8080")
 //!     .queues(vec!["default", "email"])
@@ -47,6 +54,8 @@
 //! }).await;
 //!
 //! worker.start().await?;
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! ## Features
@@ -66,6 +75,7 @@ pub mod middleware;
 pub mod queue;
 pub mod retry;
 #[cfg(feature = "testing")]
+#[cfg_attr(docsrs, doc(cfg(feature = "testing")))]
 pub mod testing;
 pub mod transport;
 pub mod worker;
@@ -73,6 +83,7 @@ pub mod workflow;
 
 /// Tracing middleware for structured job processing instrumentation.
 #[cfg(feature = "tracing-middleware")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tracing-middleware")))]
 pub mod tracing_mw;
 
 // ---------------------------------------------------------------------------
