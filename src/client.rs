@@ -6,24 +6,14 @@ use crate::queue::{
 };
 use crate::transport::{self, DynTransport, HttpTransport};
 use crate::workflow::{EnqueueOption, Workflow, WorkflowDefinition};
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 /// Percent-encode a string for use in URL path segments or query values.
 fn url_encode(s: &str) -> String {
-    let mut encoded = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(b as char);
-            }
-            _ => {
-                encoded.push_str(&format!("%{:02X}", b));
-            }
-        }
-    }
-    encoded
+    utf8_percent_encode(s, NON_ALPHANUMERIC).to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -138,8 +128,7 @@ impl Client {
     }
 
     /// Create a client with a custom transport (for testing or alternative backends).
-    #[allow(dead_code)]
-    pub(crate) fn with_transport(transport: DynTransport) -> Self {
+    pub fn with_transport(transport: DynTransport) -> Self {
         Self { transport }
     }
 
@@ -346,11 +335,11 @@ impl Client {
     }
 
     // -----------------------------------------------------------------------
-    // Internal: used by worker for ack/nack operations
+    // Transport access
     // -----------------------------------------------------------------------
 
-    #[allow(dead_code)]
-    pub(crate) fn transport(&self) -> &DynTransport {
+    /// Get a reference to the underlying transport handle.
+    pub fn transport(&self) -> &DynTransport {
         &self.transport
     }
 }

@@ -65,7 +65,7 @@ pub mod middleware;
 pub mod queue;
 pub mod retry;
 pub mod testing;
-mod transport;
+pub mod transport;
 pub mod worker;
 pub mod workflow;
 
@@ -80,11 +80,12 @@ pub use client::{Client, ClientBuilder, EnqueueBuilder, JobRequest};
 pub use errors::{JobError, OjsError, Result, ServerError};
 pub use events::Event;
 pub use job::{ConflictStrategy, Job, JobState, UniqueDimension, UniquePolicy};
-pub use middleware::{BoxFuture, HandlerResult, Middleware, Next};
+pub use middleware::{BoxFuture, FnMiddleware, HandlerResult, Middleware, Next};
 pub use queue::{
     CronJob, CronJobRequest, HealthStatus, Manifest, OverlapPolicy, Pagination, Queue, QueueStats,
 };
 pub use retry::{OnExhaustion, RetryPolicy};
+pub use transport::{DynTransport, Method as TransportMethod, Transport};
 pub use worker::{JobContext, Worker, WorkerBuilder, WorkerState};
 pub use workflow::{
     batch, chain, group, BatchCallbacks, EnqueueOption, Step, Workflow, WorkflowDefinition,

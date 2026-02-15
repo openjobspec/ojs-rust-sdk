@@ -9,8 +9,7 @@ use std::sync::Arc;
 
 /// HTTP method for transport requests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub(crate) enum Method {
+pub enum Method {
     Get,
     Post,
     Delete,
@@ -20,8 +19,37 @@ pub(crate) enum Method {
 /// An abstract transport layer for communicating with an OJS server.
 ///
 /// This trait is object-safe and uses `Pin<Box<dyn Future>>` for async support.
-/// The default implementation is [`HttpTransport`] (reqwest-based).
-pub(crate) trait Transport: Send + Sync + Debug {
+/// The default implementation uses reqwest (enabled via the `reqwest-transport` feature).
+///
+/// Implement this trait to provide custom transports (e.g., in-memory for
+/// testing, gRPC, or other HTTP clients).
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use ojs::transport::{Transport, Method};
+/// use std::fmt::Debug;
+/// use std::pin::Pin;
+///
+/// #[derive(Debug)]
+/// struct MyTransport;
+///
+/// impl Transport for MyTransport {
+///     fn request(
+///         &self,
+///         method: Method,
+///         path: &str,
+///         body: Option<serde_json::Value>,
+///         raw_path: bool,
+///     ) -> Pin<Box<dyn std::future::Future<Output = ojs::Result<Option<serde_json::Value>>> + Send + '_>> {
+///         Box::pin(async move {
+///             // your implementation here
+///             Ok(None)
+///         })
+///     }
+/// }
+/// ```
+pub trait Transport: Send + Sync + Debug {
     /// Send a request with the given method, path, and optional JSON body.
     ///
     /// - `path` is relative to the OJS base path (e.g., `/jobs`, `/workers/fetch`).
@@ -37,7 +65,7 @@ pub(crate) trait Transport: Send + Sync + Debug {
 }
 
 /// A cloneable, type-erased transport handle.
-pub(crate) type DynTransport = Arc<dyn Transport>;
+pub type DynTransport = Arc<dyn Transport>;
 
 // ---------------------------------------------------------------------------
 // Typed helper functions for working with DynTransport

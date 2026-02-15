@@ -5,7 +5,6 @@ use std::future::Future;
 use std::pin::Pin;
 
 const OJS_CONTENT_TYPE: &str = "application/openjobspec+json";
-const OJS_VERSION: &str = "1.0.0-rc.1";
 const BASE_PATH: &str = "/ojs/v1";
 
 /// HTTP transport layer for communicating with an OJS server.
@@ -62,7 +61,7 @@ impl HttpTransport {
         req = req
             .header("Content-Type", OJS_CONTENT_TYPE)
             .header("Accept", OJS_CONTENT_TYPE)
-            .header("OJS-Version", OJS_VERSION);
+            .header("OJS-Version", crate::OJS_VERSION);
 
         if let Some(ref token) = self.auth_token {
             req = req.header("Authorization", format!("Bearer {}", token));
