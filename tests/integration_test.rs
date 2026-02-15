@@ -260,14 +260,7 @@ fn test_job_args_as_struct() {
 
 #[test]
 fn test_server_error_classification() {
-    let err = ojs::ServerError {
-        code: "not_found".into(),
-        message: "job not found".into(),
-        retryable: false,
-        details: None,
-        request_id: None,
-        http_status: 404,
-    };
+    let err = ojs::ServerError::new("not_found", "job not found", 404);
 
     assert!(err.is_not_found());
     assert!(!err.is_duplicate());

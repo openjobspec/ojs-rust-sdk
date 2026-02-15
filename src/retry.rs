@@ -105,6 +105,7 @@ impl RetryPolicy {
 }
 
 /// Action taken when all retry attempts are exhausted.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OnExhaustion {

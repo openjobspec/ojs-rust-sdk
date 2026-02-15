@@ -9,6 +9,7 @@ use std::collections::HashMap;
 // ---------------------------------------------------------------------------
 
 /// The lifecycle state of a job.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobState {
@@ -138,6 +139,7 @@ impl UniquePolicy {
 }
 
 /// Dimensions used for computing the uniqueness hash.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UniqueDimension {
@@ -148,6 +150,7 @@ pub enum UniqueDimension {
 }
 
 /// Strategy for handling duplicate job conflicts.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConflictStrategy {
@@ -181,6 +184,7 @@ fn default_unique_states() -> Vec<JobState> {
 // ---------------------------------------------------------------------------
 
 /// A job envelope conforming to the OJS specification.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
     /// OJS specification version.

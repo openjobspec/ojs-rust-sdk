@@ -1,3 +1,32 @@
+//! OJS lifecycle event types.
+//!
+//! This module defines the event envelope and type constants from the
+//! [OJS Events specification](https://openjobspec.org). Events follow the
+//! CloudEvents format and represent lifecycle transitions of jobs, workflows,
+//! queues, and workers.
+//!
+//! These types are provided for deserializing events received from an OJS
+//! server (e.g., via SSE or webhook). The SDK does not currently include a
+//! built-in event subscription client — events should be consumed through
+//! server-specific streaming endpoints.
+//!
+//! # Example
+//!
+//! ```rust
+//! use ojs::Event;
+//!
+//! let raw = r#"{
+//!     "specversion": "1.0",
+//!     "id": "evt_001",
+//!     "type": "job.completed",
+//!     "source": "ojs://my-service/workers/w1",
+//!     "time": "2025-01-01T00:00:00Z"
+//! }"#;
+//!
+//! let event: Event = serde_json::from_str(raw).unwrap();
+//! assert_eq!(event.event_type, "job.completed");
+//! ```
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -46,6 +75,7 @@ pub const EVENT_CRON_SKIPPED: &str = "cron.skipped";
 // ---------------------------------------------------------------------------
 
 /// An OJS lifecycle event following the CloudEvents envelope format.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     /// Event specification version (always "1.0").
@@ -81,6 +111,3 @@ pub struct Event {
 fn default_event_specversion() -> String {
     "1.0".to_string()
 }
-
-/// Handler function for processing events.
-pub type EventHandler = Box<dyn Fn(Event) + Send + Sync>;

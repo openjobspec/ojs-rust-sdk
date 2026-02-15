@@ -47,7 +47,7 @@ impl Next {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust,no_run
 /// use ojs::{Middleware, Next, JobContext, BoxFuture, HandlerResult};
 /// use std::time::Instant;
 ///
@@ -58,7 +58,7 @@ impl Next {
 ///         Box::pin(async move {
 ///             let start = Instant::now();
 ///             let result = next.run(ctx).await;
-///             tracing::info!(elapsed_ms = start.elapsed().as_millis(), "job processed");
+///             println!("job processed in {:?}", start.elapsed());
 ///             result
 ///         })
 ///     }
@@ -74,7 +74,6 @@ pub trait Middleware: Send + Sync + 'static {
 // ---------------------------------------------------------------------------
 
 pub(crate) struct NamedMiddleware {
-    #[allow(dead_code)]
     pub name: String,
     pub middleware: Arc<dyn Middleware>,
 }
@@ -112,7 +111,6 @@ impl MiddlewareChain {
     }
 
     /// Insert middleware before an existing named middleware.
-    #[allow(dead_code)]
     pub fn insert_before(&mut self, existing: &str, name: impl Into<String>, mw: impl Middleware) {
         let pos = self
             .middleware
@@ -130,7 +128,6 @@ impl MiddlewareChain {
     }
 
     /// Insert middleware after an existing named middleware.
-    #[allow(dead_code)]
     pub fn insert_after(&mut self, existing: &str, name: impl Into<String>, mw: impl Middleware) {
         let pos = self
             .middleware
@@ -149,7 +146,6 @@ impl MiddlewareChain {
     }
 
     /// Remove a named middleware from the chain.
-    #[allow(dead_code)]
     pub fn remove(&mut self, name: &str) {
         self.middleware.retain(|m| m.name != name);
     }

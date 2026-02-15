@@ -8,6 +8,7 @@ use std::collections::HashMap;
 // ---------------------------------------------------------------------------
 
 /// The lifecycle state of a workflow.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowState {
@@ -83,6 +84,7 @@ impl Step {
 // ---------------------------------------------------------------------------
 
 /// Options that can be applied when enqueuing a job.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum EnqueueOption {
     Queue(String),
@@ -205,6 +207,7 @@ pub struct WorkflowDefinition {
     pub options: Vec<EnqueueOption>,
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowType {
@@ -402,6 +405,7 @@ pub(crate) struct WorkflowStepWire {
 // ---------------------------------------------------------------------------
 
 /// A workflow instance returned from the server.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workflow {
     /// Workflow identifier.
@@ -428,6 +432,7 @@ pub struct Workflow {
 }
 
 /// Status of a single step within a workflow.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowStepStatus {
     /// Step identifier (e.g., "step-0", "job-1").
@@ -435,7 +440,7 @@ pub struct WorkflowStepStatus {
     /// Job type.
     #[serde(rename = "type")]
     pub job_type: String,
-    /// Current state.
+    /// Current state as a raw string from the server.
     pub state: String,
     /// Associated job ID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -452,6 +457,16 @@ pub struct WorkflowStepStatus {
     /// Step result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
+}
+
+impl WorkflowStepStatus {
+    /// Try to parse the state as a typed [`crate::JobState`].
+    ///
+    /// Returns `None` if the server returned a state string that doesn't
+    /// map to a known `JobState` variant.
+    pub fn job_state(&self) -> Option<crate::JobState> {
+        serde_json::from_value(serde_json::Value::String(self.state.clone())).ok()
+    }
 }
 
 #[cfg(test)]
@@ -501,5 +516,32 @@ mod tests {
         assert_eq!(wire.steps.len(), 3); // 2 jobs + 1 callback
         assert_eq!(wire.steps[2].id, "on-complete");
         assert_eq!(wire.steps[2].depends_on, vec!["job-0", "job-1"]);
+    }
+
+    #[test]
+    fn test_workflow_step_status_job_state() {
+        let step = WorkflowStepStatus {
+            id: "step-0".into(),
+            job_type: "fetch".into(),
+            state: "completed".into(),
+            job_id: None,
+            depends_on: vec![],
+            started_at: None,
+            completed_at: None,
+            result: None,
+        };
+        assert_eq!(step.job_state(), Some(crate::JobState::Completed));
+
+        let step_unknown = WorkflowStepStatus {
+            id: "step-1".into(),
+            job_type: "fetch".into(),
+            state: "unknown_state".into(),
+            job_id: None,
+            depends_on: vec![],
+            started_at: None,
+            completed_at: None,
+            result: None,
+        };
+        assert_eq!(step_unknown.job_state(), None);
     }
 }

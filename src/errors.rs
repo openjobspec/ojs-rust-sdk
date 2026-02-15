@@ -24,6 +24,7 @@ pub const ERR_ENVELOPE_TOO_LARGE: &str = "envelope_too_large";
 // Main SDK error type
 // ---------------------------------------------------------------------------
 
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum OjsError {
     /// An error returned by the OJS server.
@@ -82,6 +83,7 @@ impl From<serde_json::Error> for OjsError {
 // Server error (structured error from OJS backend)
 // ---------------------------------------------------------------------------
 
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerError {
     pub code: String,
@@ -105,6 +107,24 @@ impl fmt::Display for ServerError {
 impl std::error::Error for ServerError {}
 
 impl ServerError {
+    /// Create a new server error.
+    pub fn new(code: impl Into<String>, message: impl Into<String>, http_status: u16) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+            retryable: false,
+            details: None,
+            request_id: None,
+            http_status,
+        }
+    }
+
+    /// Set whether this error is retryable.
+    pub fn retryable(mut self, retryable: bool) -> Self {
+        self.retryable = retryable;
+        self
+    }
+
     /// Returns `true` if this error indicates the operation can be retried.
     pub fn is_retryable(&self) -> bool {
         self.retryable
@@ -174,6 +194,7 @@ impl ServerErrorPayload {
 // Job-level error (attached to failed jobs)
 // ---------------------------------------------------------------------------
 
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobError {
     /// Error type / class name.

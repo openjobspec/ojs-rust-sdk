@@ -17,6 +17,7 @@ use tokio::task::JoinSet;
 // ---------------------------------------------------------------------------
 
 /// The lifecycle state of a worker.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum WorkerState {

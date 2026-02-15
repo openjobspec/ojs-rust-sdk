@@ -131,6 +131,7 @@ pub struct CronJob {
 }
 
 /// How to handle overlapping cron runs.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OverlapPolicy {
