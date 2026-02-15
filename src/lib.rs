@@ -69,6 +69,9 @@ mod transport;
 pub mod worker;
 pub mod workflow;
 
+/// OpenTelemetry integration (requires `opentelemetry` feature).
+pub mod otel;
+
 // ---------------------------------------------------------------------------
 // Public re-exports
 // ---------------------------------------------------------------------------
