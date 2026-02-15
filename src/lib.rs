@@ -64,6 +64,7 @@ pub mod job;
 pub mod middleware;
 pub mod queue;
 pub mod retry;
+pub mod testing;
 mod transport;
 pub mod worker;
 pub mod workflow;
