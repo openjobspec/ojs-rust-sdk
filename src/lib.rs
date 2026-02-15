@@ -65,6 +65,7 @@ pub mod job;
 pub mod middleware;
 pub mod queue;
 pub mod retry;
+#[cfg(feature = "testing")]
 pub mod testing;
 pub mod transport;
 pub mod worker;

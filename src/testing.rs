@@ -2,17 +2,24 @@
 //!
 //! Implements the OJS Testing Specification (ojs-testing.md).
 //!
+//! Enable via the `testing` feature:
+//!
+//! ```toml
+//! [dev-dependencies]
+//! ojs = { version = "0.1", features = ["testing"] }
+//! ```
+//!
 //! # Usage
 //!
-//! ```rust,ignore
+//! ```rust
+//! # #[cfg(feature = "testing")]
+//! # {
 //! use ojs::testing::FakeStore;
 //!
-//! #[test]
-//! fn test_sends_welcome_email() {
-//!     let store = FakeStore::new();
-//!     // ... code that enqueues via store.record_enqueue(...)
-//!     store.assert_enqueued("email.send", None);
-//! }
+//! let store = FakeStore::new();
+//! store.record_enqueue("email.send", vec![], None, None);
+//! store.assert_enqueued("email.send", None);
+//! # }
 //! ```
 
 use std::collections::HashMap;
@@ -104,7 +111,9 @@ impl FakeStore {
         F: Fn(&FakeJob) -> Result<(), String> + Send + 'static,
     {
         let mut inner = self.inner.lock().unwrap();
-        inner.handlers.insert(job_type.to_string(), Box::new(handler));
+        inner
+            .handlers
+            .insert(job_type.to_string(), Box::new(handler));
     }
 
     /// Assert that at least one job of the given type was enqueued.
@@ -130,14 +139,22 @@ impl FakeStore {
             !matches.is_empty(),
             "Expected at least one enqueued job of type '{}', found none. Enqueued types: {:?}",
             job_type,
-            inner.enqueued.iter().map(|j| &j.job_type).collect::<Vec<_>>()
+            inner
+                .enqueued
+                .iter()
+                .map(|j| &j.job_type)
+                .collect::<Vec<_>>()
         );
     }
 
     /// Assert that NO job of the given type was enqueued.
     pub fn refute_enqueued(&self, job_type: &str) {
         let inner = self.inner.lock().unwrap();
-        let matches: Vec<_> = inner.enqueued.iter().filter(|j| j.job_type == job_type).collect();
+        let matches: Vec<_> = inner
+            .enqueued
+            .iter()
+            .filter(|j| j.job_type == job_type)
+            .collect();
         assert!(
             matches.is_empty(),
             "Expected no enqueued jobs of type '{}', but found {}",
@@ -160,7 +177,10 @@ impl FakeStore {
     pub fn assert_completed(&self, job_type: &str) {
         let inner = self.inner.lock().unwrap();
         assert!(
-            inner.performed.iter().any(|j| j.job_type == job_type && j.state == "completed"),
+            inner
+                .performed
+                .iter()
+                .any(|j| j.job_type == job_type && j.state == "completed"),
             "Expected a completed job of type '{}', found none",
             job_type
         );
@@ -209,6 +229,129 @@ impl FakeStore {
         }
 
         processed
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Job test builder
+// ---------------------------------------------------------------------------
+
+/// Builder for creating [`crate::Job`] instances in tests.
+///
+/// Provides sensible defaults for all fields so you only need to set
+/// what matters for your test.
+///
+/// # Example
+///
+/// ```rust
+/// # #[cfg(feature = "testing")]
+/// # {
+/// use ojs::testing::JobBuilder;
+/// use serde_json::json;
+///
+/// let job = JobBuilder::new("email.send")
+///     .args(json!({"to": "user@example.com"}))
+///     .queue("email")
+///     .build();
+///
+/// assert_eq!(job.job_type, "email.send");
+/// assert_eq!(job.queue, "email");
+/// # }
+/// ```
+pub struct JobBuilder {
+    job: crate::Job,
+}
+
+impl JobBuilder {
+    /// Create a new builder with the given job type and sensible defaults.
+    pub fn new(job_type: impl Into<String>) -> Self {
+        Self {
+            job: crate::Job {
+                specversion: crate::OJS_VERSION.to_string(),
+                id: format!("test_{}", uuid::Uuid::now_v7()),
+                job_type: job_type.into(),
+                queue: "default".to_string(),
+                args: serde_json::json!([{}]),
+                meta: None,
+                priority: 0,
+                timeout: None,
+                scheduled_at: None,
+                expires_at: None,
+                retry: None,
+                unique: None,
+                schema: None,
+                state: Some(crate::JobState::Available),
+                attempt: 0,
+                max_attempts: None,
+                created_at: Some(chrono::Utc::now()),
+                enqueued_at: Some(chrono::Utc::now()),
+                started_at: None,
+                completed_at: None,
+                error: None,
+                result: None,
+                tags: vec![],
+                timeout_ms: None,
+            },
+        }
+    }
+
+    /// Set the job ID.
+    pub fn id(mut self, id: impl Into<String>) -> Self {
+        self.job.id = id.into();
+        self
+    }
+
+    /// Set the job arguments.
+    pub fn args(mut self, args: serde_json::Value) -> Self {
+        self.job.args = crate::workflow::normalize_args(&args);
+        self
+    }
+
+    /// Set the target queue.
+    pub fn queue(mut self, queue: impl Into<String>) -> Self {
+        self.job.queue = queue.into();
+        self
+    }
+
+    /// Set the job state.
+    pub fn state(mut self, state: crate::JobState) -> Self {
+        self.job.state = Some(state);
+        self
+    }
+
+    /// Set the attempt number.
+    pub fn attempt(mut self, attempt: u32) -> Self {
+        self.job.attempt = attempt;
+        self
+    }
+
+    /// Set the priority.
+    pub fn priority(mut self, priority: i32) -> Self {
+        self.job.priority = priority;
+        self
+    }
+
+    /// Set metadata.
+    pub fn meta(mut self, meta: std::collections::HashMap<String, serde_json::Value>) -> Self {
+        self.job.meta = Some(meta);
+        self
+    }
+
+    /// Set tags.
+    pub fn tags(mut self, tags: Vec<String>) -> Self {
+        self.job.tags = tags;
+        self
+    }
+
+    /// Set the retry policy.
+    pub fn retry(mut self, policy: crate::RetryPolicy) -> Self {
+        self.job.retry = Some(policy);
+        self
+    }
+
+    /// Build the [`crate::Job`].
+    pub fn build(self) -> crate::Job {
+        self.job
     }
 }
 
@@ -273,5 +416,39 @@ mod tests {
         store.record_enqueue("email.send", vec![], None, None);
         store.clear_all();
         assert!(store.all_enqueued().is_empty());
+    }
+
+    #[test]
+    fn test_job_builder_defaults() {
+        let job = JobBuilder::new("email.send").build();
+        assert_eq!(job.job_type, "email.send");
+        assert_eq!(job.queue, "default");
+        assert_eq!(job.priority, 0);
+        assert_eq!(job.attempt, 0);
+        assert_eq!(job.state, Some(crate::JobState::Available));
+        assert!(job.id.starts_with("test_"));
+    }
+
+    #[test]
+    fn test_job_builder_custom_fields() {
+        let job = JobBuilder::new("report.generate")
+            .id("custom-id")
+            .queue("reports")
+            .priority(5)
+            .attempt(2)
+            .state(crate::JobState::Active)
+            .args(serde_json::json!({"id": 42}))
+            .tags(vec!["urgent".into()])
+            .build();
+
+        assert_eq!(job.id, "custom-id");
+        assert_eq!(job.job_type, "report.generate");
+        assert_eq!(job.queue, "reports");
+        assert_eq!(job.priority, 5);
+        assert_eq!(job.attempt, 2);
+        assert_eq!(job.state, Some(crate::JobState::Active));
+        assert_eq!(job.tags, vec!["urgent"]);
+        let id: u32 = job.arg("id").unwrap();
+        assert_eq!(id, 42);
     }
 }
