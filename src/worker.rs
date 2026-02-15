@@ -5,7 +5,7 @@ use crate::job::{
 };
 use crate::middleware::{BoxFuture, HandlerFn, HandlerResult, Middleware, MiddlewareChain};
 use crate::transport::{self, DynTransport, HttpTransport};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -240,7 +240,7 @@ impl WorkerBuilder {
             middleware: Arc::new(RwLock::new(MiddlewareChain::new())),
             state: Arc::new(AtomicU8::new(WorkerState::Running as u8)),
             active_count: Arc::new(AtomicI64::new(0)),
-            active_jobs: Arc::new(RwLock::new(Vec::new())),
+            active_jobs: Arc::new(RwLock::new(HashSet::new())),
         })
     }
 }
@@ -285,7 +285,7 @@ pub struct Worker {
     middleware: Arc<RwLock<MiddlewareChain>>,
     state: Arc<AtomicU8>,
     active_count: Arc<AtomicI64>,
-    active_jobs: Arc<RwLock<Vec<String>>>,
+    active_jobs: Arc<RwLock<HashSet<String>>>,
 }
 
 impl std::fmt::Debug for Worker {
@@ -325,6 +325,41 @@ impl Worker {
     /// (first registered = outermost wrapper).
     pub async fn use_middleware(&self, name: impl Into<String>, mw: impl Middleware) {
         self.middleware.write().await.add(name, mw);
+    }
+
+    /// Remove a named middleware from the worker.
+    pub async fn remove_middleware(&self, name: &str) {
+        self.middleware.write().await.remove(name);
+    }
+
+    /// Insert middleware before an existing named middleware.
+    ///
+    /// If the named middleware doesn't exist, the new middleware is prepended.
+    pub async fn insert_middleware_before(
+        &self,
+        existing: &str,
+        name: impl Into<String>,
+        mw: impl Middleware,
+    ) {
+        self.middleware
+            .write()
+            .await
+            .insert_before(existing, name, mw);
+    }
+
+    /// Insert middleware after an existing named middleware.
+    ///
+    /// If the named middleware doesn't exist, the new middleware is appended.
+    pub async fn insert_middleware_after(
+        &self,
+        existing: &str,
+        name: impl Into<String>,
+        mw: impl Middleware,
+    ) {
+        self.middleware
+            .write()
+            .await
+            .insert_after(existing, name, mw);
     }
 
     /// Get the current worker state.
@@ -369,7 +404,6 @@ impl Worker {
             let interval = self.heartbeat_interval;
             let state = self.state.clone();
             let active_jobs = self.active_jobs.clone();
-            let _active_count = self.active_count.clone();
             let mut shutdown_rx = shutdown_rx.clone();
 
             tokio::spawn(async move {
@@ -379,7 +413,7 @@ impl Worker {
                 loop {
                     tokio::select! {
                         _ = ticker.tick() => {
-                            let jobs = active_jobs.read().await.clone();
+                            let jobs: Vec<String> = active_jobs.read().await.iter().cloned().collect();
                             let req = HeartbeatRequest {
                                 worker_id: worker_id.clone(),
                                 active_jobs: Some(jobs),
@@ -470,7 +504,7 @@ impl Worker {
 
                         // Track active job
                         self.active_count.fetch_add(1, Ordering::SeqCst);
-                        self.active_jobs.write().await.push(job_id.clone());
+                        self.active_jobs.write().await.insert(job_id.clone());
 
                         let transport = self.transport.clone();
                         let worker_id = self.worker_id.clone();
@@ -488,7 +522,7 @@ impl Worker {
                             active_count.fetch_sub(1, Ordering::SeqCst);
                             {
                                 let mut jobs = active_jobs.write().await;
-                                jobs.retain(|id| id != &job_id);
+                                jobs.remove(&job_id);
                             }
 
                             drop(permit);
@@ -689,10 +723,5 @@ async fn nack_job(
 // ---------------------------------------------------------------------------
 
 fn generate_worker_id() -> String {
-    let pid = std::process::id();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("worker_{}_{}", pid, nanos)
+    format!("worker_{}", uuid::Uuid::now_v7())
 }
