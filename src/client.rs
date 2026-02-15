@@ -48,6 +48,19 @@ impl ClientBuilder {
         self
     }
 
+    /// Apply shared connection configuration.
+    ///
+    /// This sets the URL, auth token, headers, and timeout from a
+    /// [`ConnectionConfig`](crate::ConnectionConfig). Individual builder
+    /// methods called after this will override the config values.
+    pub fn connection(mut self, config: crate::ConnectionConfig) -> Self {
+        self.url = Some(config.url);
+        self.auth_token = config.auth_token;
+        self.headers = config.headers;
+        self.timeout = config.timeout;
+        self
+    }
+
     /// Set the authentication bearer token.
     pub fn auth_token(mut self, token: impl Into<String>) -> Self {
         self.auth_token = Some(token.into());

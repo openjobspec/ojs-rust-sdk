@@ -58,6 +58,7 @@
 //! - **Full OJS compliance**: Implements the complete OJS v1.0.0-rc.1 specification
 
 pub mod client;
+pub mod config;
 pub mod errors;
 pub mod events;
 pub mod job;
@@ -77,6 +78,7 @@ pub mod otel;
 // ---------------------------------------------------------------------------
 
 pub use client::{Client, ClientBuilder, EnqueueBuilder, JobRequest};
+pub use config::ConnectionConfig;
 pub use errors::{JobError, OjsError, Result, ServerError};
 pub use events::Event;
 pub use job::{ConflictStrategy, Job, JobState, UniqueDimension, UniquePolicy};

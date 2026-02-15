@@ -1,4 +1,4 @@
-use ojs::{Client, JobRequest, RetryPolicy};
+use ojs::{Client, ConnectionConfig, JobRequest, RetryPolicy, Worker};
 use serde_json::json;
 
 #[test]
@@ -45,4 +45,40 @@ fn test_retry_policy_builder() {
     assert_eq!(policy.initial_interval, "PT2S");
     assert_eq!(policy.backoff_coefficient, 3.0);
     assert!(!policy.jitter);
+}
+
+#[test]
+fn test_connection_config_with_client() {
+    let config = ConnectionConfig::new("http://localhost:8080")
+        .auth_token("shared-token")
+        .header("X-Tenant", "t1");
+
+    let result = Client::builder().connection(config).build();
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_connection_config_with_worker() {
+    let config = ConnectionConfig::new("http://localhost:8080")
+        .auth_token("shared-token")
+        .timeout(std::time::Duration::from_secs(10));
+
+    let result = Worker::builder()
+        .connection(config)
+        .queues(vec!["default"])
+        .build();
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_connection_config_shared_between_client_and_worker() {
+    let config = ConnectionConfig::new("http://localhost:8080")
+        .auth_token("shared-token")
+        .header("X-Tenant", "tenant-42");
+
+    let client = Client::builder().connection(config.clone()).build();
+    let worker = Worker::builder().connection(config).build();
+
+    assert!(client.is_ok());
+    assert!(worker.is_ok());
 }

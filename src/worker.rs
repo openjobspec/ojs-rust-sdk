@@ -140,6 +140,19 @@ impl WorkerBuilder {
         self
     }
 
+    /// Apply shared connection configuration.
+    ///
+    /// This sets the URL, auth token, headers, and timeout from a
+    /// [`ConnectionConfig`](crate::ConnectionConfig). Individual builder
+    /// methods called after this will override the config values.
+    pub fn connection(mut self, config: crate::ConnectionConfig) -> Self {
+        self.url = Some(config.url);
+        self.auth_token = config.auth_token;
+        self.headers = config.headers;
+        self.timeout = config.timeout;
+        self
+    }
+
     /// Set the queues to fetch jobs from (priority order: left to right).
     pub fn queues(mut self, queues: Vec<impl Into<String>>) -> Self {
         self.queues = queues.into_iter().map(Into::into).collect();
