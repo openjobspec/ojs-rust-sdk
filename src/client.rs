@@ -4,6 +4,7 @@ use crate::queue::{
     CronJob, CronJobRequest, CronJobsResponse, DeadLetterResponse, HealthStatus, Manifest,
     Pagination, Queue, QueueStats, QueuesResponse,
 };
+use crate::schema::{RegisterSchemaRequest, Schema, SchemaDetail, SchemasResponse};
 use crate::transport::{self, DynTransport, HttpTransport};
 use crate::workflow::{EnqueueOption, Workflow, WorkflowDefinition};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
@@ -346,6 +347,33 @@ impl Client {
     pub async fn unregister_cron_job(&self, name: &str) -> crate::Result<()> {
         let name = url_encode(name);
         transport::transport_delete_no_response(&self.transport, &format!("/cron/{}", name)).await
+    }
+
+    // -----------------------------------------------------------------------
+    // Schema operations
+    // -----------------------------------------------------------------------
+
+    /// List all registered schemas.
+    pub async fn list_schemas(&self) -> crate::Result<Vec<Schema>> {
+        let resp: SchemasResponse = transport::transport_get(&self.transport, "/schemas").await?;
+        Ok(resp.schemas)
+    }
+
+    /// Register a new schema.
+    pub async fn register_schema(&self, req: RegisterSchemaRequest) -> crate::Result<SchemaDetail> {
+        transport::transport_post(&self.transport, "/schemas", &req).await
+    }
+
+    /// Get a schema by URI.
+    pub async fn get_schema(&self, uri: &str) -> crate::Result<SchemaDetail> {
+        let uri = url_encode(uri);
+        transport::transport_get(&self.transport, &format!("/schemas/{}", uri)).await
+    }
+
+    /// Delete a schema by URI.
+    pub async fn delete_schema(&self, uri: &str) -> crate::Result<()> {
+        let uri = url_encode(uri);
+        transport::transport_delete_no_response(&self.transport, &format!("/schemas/{}", uri)).await
     }
 
     // -----------------------------------------------------------------------

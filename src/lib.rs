@@ -74,6 +74,7 @@ pub mod job;
 pub mod middleware;
 pub mod queue;
 pub mod retry;
+pub mod schema;
 #[cfg(feature = "testing")]
 #[cfg_attr(docsrs, doc(cfg(feature = "testing")))]
 pub mod testing;
@@ -100,6 +101,7 @@ pub use queue::{
     CronJob, CronJobRequest, HealthStatus, Manifest, OverlapPolicy, Pagination, Queue, QueueStats,
 };
 pub use retry::{OnExhaustion, RetryPolicy};
+pub use schema::{RegisterSchemaRequest, Schema, SchemaDetail};
 pub use transport::{DynTransport, Method as TransportMethod, Transport};
 pub use worker::{JobContext, Worker, WorkerBuilder, WorkerState};
 pub use workflow::{
