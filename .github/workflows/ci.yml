@@ -45,6 +45,24 @@ jobs:
       - uses: Swatinem/rust-cache@ad397744b0d591a723ab90405b7247fac0e6b8db # v2
       - run: cargo test --all-features
 
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@ad397744b0d591a723ab90405b7247fac0e6b8db # v2
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin
+      - name: Run coverage
+        run: cargo tarpaulin --all-features --out xml --fail-under 75
+      - name: Upload coverage report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: coverage-report
+          path: cobertura.xml
+
   doc:
     name: Documentation
     runs-on: ubuntu-latest
@@ -64,3 +82,10 @@ jobs:
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  deny:
+    name: Supply Chain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
