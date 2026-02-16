@@ -1,6 +1,4 @@
-use ojs::{
-    CronJob, HealthStatus, Manifest, OverlapPolicy, Queue, QueueStats,
-};
+use ojs::{CronJob, HealthStatus, Manifest, OverlapPolicy, Queue, QueueStats};
 use serde_json::json;
 
 // ---------------------------------------------------------------------------

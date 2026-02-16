@@ -195,7 +195,10 @@ async fn main() -> ojs::Result<()> {
     meta.insert("enqueued_by".to_string(), json!("my-service"));
 
     let job = client
-        .enqueue("email.send", json!({"to": "user@example.com", "subject": "Hello"}))
+        .enqueue(
+            "email.send",
+            json!({"to": "user@example.com", "subject": "Hello"}),
+        )
         .queue("email")
         .meta(meta)
         .send()
@@ -219,9 +222,7 @@ async fn main() -> ojs::Result<()> {
         .build()?;
 
     // Register middleware (outermost to innermost)
-    worker
-        .use_middleware("logging", LoggingMiddleware)
-        .await;
+    worker.use_middleware("logging", LoggingMiddleware).await;
     worker
         .use_middleware("metrics", MetricsMiddleware::new())
         .await;

@@ -595,7 +595,10 @@ async fn test_get_schema() {
         .await;
 
     let client = Client::builder().url(server.uri()).build().unwrap();
-    let detail = client.get_schema("urn:ojs:schema:email.send").await.unwrap();
+    let detail = client
+        .get_schema("urn:ojs:schema:email.send")
+        .await
+        .unwrap();
 
     assert_eq!(detail.uri, "urn:ojs:schema:email.send");
     assert_eq!(detail.schema_type, "json-schema");
@@ -614,5 +617,8 @@ async fn test_delete_schema() {
         .await;
 
     let client = Client::builder().url(server.uri()).build().unwrap();
-    client.delete_schema("urn:ojs:schema:email.send").await.unwrap();
+    client
+        .delete_schema("urn:ojs:schema:email.send")
+        .await
+        .unwrap();
 }
