@@ -167,6 +167,8 @@ fn parse_error_response(body: &[u8], status_code: u16) -> OjsError {
             details: None,
             request_id: None,
             http_status: status_code,
+            retry_after: None,
+            rate_limit: None,
         }))
     }
 }

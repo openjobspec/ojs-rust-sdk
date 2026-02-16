@@ -96,6 +96,13 @@ pub struct ServerError {
     pub request_id: Option<String>,
     #[serde(skip)]
     pub http_status: u16,
+    /// Duration to wait before retrying, extracted from the `Retry-After`
+    /// response header. `None` if the header was absent or invalid.
+    #[serde(skip)]
+    pub retry_after: Option<std::time::Duration>,
+    /// Rate limit metadata from response headers, if present.
+    #[serde(skip)]
+    pub rate_limit: Option<RateLimitInfo>,
 }
 
 impl fmt::Display for ServerError {
@@ -116,6 +123,8 @@ impl ServerError {
             details: None,
             request_id: None,
             http_status,
+            retry_after: None,
+            rate_limit: None,
         }
     }
 
@@ -154,6 +163,34 @@ impl ServerError {
     pub fn is_queue_paused(&self) -> bool {
         self.code == ERR_QUEUE_PAUSED
     }
+
+    /// Returns the retry-after duration, if the server provided one.
+    pub fn retry_after(&self) -> Option<std::time::Duration> {
+        self.retry_after
+    }
+
+    /// Returns the rate limit info, if the server provided rate limit headers.
+    pub fn rate_limit(&self) -> Option<&RateLimitInfo> {
+        self.rate_limit.as_ref()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rate limit info
+// ---------------------------------------------------------------------------
+
+/// Rate limit metadata extracted from response headers.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RateLimitInfo {
+    /// Maximum requests allowed per window (`X-RateLimit-Limit`).
+    pub limit: Option<i64>,
+    /// Remaining requests in current window (`X-RateLimit-Remaining`).
+    pub remaining: Option<i64>,
+    /// Unix timestamp when window resets (`X-RateLimit-Reset`).
+    pub reset: Option<i64>,
+    /// Duration to wait before retrying (`Retry-After`).
+    pub retry_after: Option<std::time::Duration>,
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +223,8 @@ impl ServerErrorPayload {
             details: self.details,
             request_id: self.request_id,
             http_status,
+            retry_after: None,
+            rate_limit: None,
         }
     }
 }

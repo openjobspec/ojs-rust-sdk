@@ -103,7 +103,7 @@ pub mod otel;
 
 pub use client::{Client, ClientBuilder, EnqueueBuilder, JobRequest};
 pub use config::ConnectionConfig;
-pub use errors::{JobError, OjsError, Result, ServerError};
+pub use errors::{JobError, OjsError, RateLimitInfo, Result, ServerError};
 pub use events::Event;
 pub use job::{ConflictStrategy, Job, JobState, UniqueDimension, UniquePolicy};
 pub use middleware::{BoxFuture, FnMiddleware, HandlerResult, Middleware, Next};

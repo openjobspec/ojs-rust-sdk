@@ -78,6 +78,14 @@ fn test_server_error_retryable() {
     let err = ServerError::new("rate_limited", "too many requests", 429).retryable(true);
     assert!(err.is_retryable());
     assert!(err.is_rate_limited());
+    assert!(err.retry_after().is_none());
+}
+
+#[test]
+fn test_server_error_retry_after() {
+    let mut err = ServerError::new("rate_limited", "too many requests", 429).retryable(true);
+    err.retry_after = Some(std::time::Duration::from_secs(60));
+    assert_eq!(err.retry_after(), Some(std::time::Duration::from_secs(60)));
 }
 
 #[test]
