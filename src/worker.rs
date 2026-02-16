@@ -325,6 +325,57 @@ impl Worker {
         handlers.insert(job_type.into(), handler);
     }
 
+    /// Register a typed handler that auto-deserializes job args via serde.
+    ///
+    /// The handler receives a [`JobContext`] and the deserialized args `T`.
+    /// This provides compile-time type safety for job arguments.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use ojs::{Worker, JobContext};
+    /// use serde::Deserialize;
+    /// use serde_json::json;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct EmailArgs {
+    ///     to: String,
+    ///     subject: String,
+    /// }
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() -> ojs::Result<()> {
+    /// let worker = Worker::builder()
+    ///     .url("http://localhost:8080")
+    ///     .build()?;
+    ///
+    /// worker.register_typed("email.send", |ctx: JobContext, args: EmailArgs| async move {
+    ///     println!("Sending to {}: {}", args.to, args.subject);
+    ///     Ok(json!({"status": "sent"}))
+    /// }).await;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn register_typed<T, F, Fut>(&self, job_type: impl Into<String>, handler: F)
+    where
+        T: serde::de::DeserializeOwned + Send + 'static,
+        F: Fn(JobContext, T) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = HandlerResult> + Send + 'static,
+    {
+        let handler = Arc::new(handler);
+        let typed_handler: HandlerFn = Arc::new(move |ctx: JobContext| {
+            let handler = handler.clone();
+            Box::pin(async move {
+                let args: T = serde_json::from_value(ctx.job.args.clone()).map_err(|e| {
+                    OjsError::Handler(format!("failed to deserialize job args: {}", e))
+                })?;
+                handler(ctx, args).await
+            }) as BoxFuture<'static, HandlerResult>
+        });
+        let mut handlers = self.handlers.write().await;
+        handlers.insert(job_type.into(), typed_handler);
+    }
+
     /// Add middleware to the worker.
     ///
     /// Middleware wraps all job handlers and executes in registration order
