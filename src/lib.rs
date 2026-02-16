@@ -87,6 +87,11 @@ pub mod workflow;
 #[cfg_attr(docsrs, doc(cfg(feature = "tracing-middleware")))]
 pub mod tracing_mw;
 
+/// Common middleware implementations (logging, timeout, metrics).
+#[cfg(feature = "common-middleware")]
+#[cfg_attr(docsrs, doc(cfg(feature = "common-middleware")))]
+pub mod middleware_common;
+
 // ---------------------------------------------------------------------------
 // Public re-exports
 // ---------------------------------------------------------------------------
