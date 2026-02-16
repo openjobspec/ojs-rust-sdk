@@ -12,7 +12,8 @@ The official Rust SDK for the [Open Job Spec](https://openjobspec.org) (OJS) pro
 
 - **Async-first** - Built on `tokio` for high-performance async I/O
 - **Type-safe** - Strong typing with `serde` serialization/deserialization
-- **Middleware** - Tower-inspired middleware chain for cross-cutting concerns (logging, tracing, metrics)
+- **Typed handlers** - Generic `register_typed::<T>()` for compile-time arg safety
+- **Middleware** - Tower-inspired middleware chain for cross-cutting concerns (logging, tracing, metrics, OpenTelemetry)
 - **Workflows** - Chain, group, and batch workflow primitives
 - **Builder pattern** - Ergonomic client and worker configuration
 - **Full OJS compliance** - Implements OJS v1.0.0-rc.1 specification
@@ -161,6 +162,85 @@ async fn main() -> ojs::Result<()> {
 }
 ```
 
+### Typed Handlers
+
+Auto-deserialize job args with compile-time type safety:
+
+```rust
+use ojs::{Worker, JobContext};
+use serde::Deserialize;
+use serde_json::json;
+
+#[derive(Deserialize)]
+struct EmailArgs {
+    to: String,
+    subject: String,
+}
+
+#[tokio::main]
+async fn main() -> ojs::Result<()> {
+    let worker = Worker::builder()
+        .url("http://localhost:8080")
+        .build()?;
+
+    // Type-safe: args auto-deserialized via serde
+    worker.register_typed("email.send", |ctx: JobContext, args: EmailArgs| async move {
+        println!("Sending to {}: {}", args.to, args.subject);
+        Ok(json!({"status": "sent"}))
+    }).await;
+
+    worker.start().await
+}
+```
+
+### OpenTelemetry Integration
+
+Native OTel tracing and metrics (enable `otel-middleware` feature):
+
+```toml
+[dependencies]
+ojs = { version = "0.1", features = ["otel-middleware"] }
+```
+
+```rust
+use ojs::otel::{OtelTracingMiddleware, OtelMetricsMiddleware};
+
+// Uses global OTel providers by default
+worker.use_middleware("otel-tracing", OtelTracingMiddleware::new()).await;
+worker.use_middleware("otel-metrics", OtelMetricsMiddleware::new()).await;
+```
+
+Recorded spans: `ojs.job {type}` with attributes `ojs.job.type`, `ojs.job.id`, `ojs.job.queue`, `ojs.job.attempt`.
+Recorded metrics: `ojs.job.started`, `ojs.job.completed`, `ojs.job.failed` (counters), `ojs.job.duration` (histogram).
+
+## Architecture
+
+```mermaid
+graph LR
+    subgraph Producer
+        C[Client] -->|enqueue| S[OJS Server]
+    end
+    subgraph Consumer
+        S -->|fetch| W[Worker]
+        W -->|ack/nack| S
+    end
+    subgraph Middleware Chain
+        W --> M1[OTel Tracing]
+        M1 --> M2[Metrics]
+        M2 --> M3[Timeout]
+        M3 --> H[Handler]
+    end
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> Running : start()
+    Running --> Quiet : server directive
+    Running --> Terminate : ctrl+c / shutdown
+    Quiet --> Terminate : ctrl+c / shutdown
+    Terminate --> [*] : grace period
+```
+
 ## API Reference
 
 ### Client
@@ -190,10 +270,21 @@ async fn main() -> ojs::Result<()> {
 | Method | Description |
 |--------|-------------|
 | `register(type, handler)` | Register a job handler |
+| `register_typed::<T>(type, handler)` | Register a typed handler with auto-deserialization |
 | `use_middleware(name, mw)` | Add middleware |
 | `start()` | Start processing (blocks until shutdown) |
 | `state()` | Get current worker state |
 | `id()` | Get worker ID |
+
+## Feature Flags
+
+| Feature | Description |
+|---------|-------------|
+| `reqwest-transport` | HTTP transport via reqwest (default) |
+| `common-middleware` | Built-in logging, timeout, metrics middleware |
+| `tracing-middleware` | Structured tracing spans via `tracing` crate |
+| `otel-middleware` | Native OpenTelemetry tracing and metrics |
+| `testing` | Test utilities and mock builders |
 
 ## MSRV
 
