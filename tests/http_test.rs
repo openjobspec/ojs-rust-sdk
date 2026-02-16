@@ -485,3 +485,134 @@ async fn test_custom_headers() {
     let health = client.health().await.unwrap();
     assert_eq!(health.status, "healthy");
 }
+
+// ---------------------------------------------------------------------------
+// Schema operations tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_list_schemas() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/ojs/v1/schemas"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "schemas": [
+                {
+                    "uri": "urn:ojs:schema:email.send",
+                    "type": "json-schema",
+                    "version": "1.0.0",
+                    "created_at": "2025-01-01T00:00:00Z"
+                },
+                {
+                    "uri": "urn:ojs:schema:report.generate",
+                    "type": "json-schema",
+                    "version": "2.0.0",
+                    "created_at": "2025-01-02T00:00:00Z"
+                }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::builder().url(server.uri()).build().unwrap();
+    let schemas = client.list_schemas().await.unwrap();
+
+    assert_eq!(schemas.len(), 2);
+    assert_eq!(schemas[0].uri, "urn:ojs:schema:email.send");
+    assert_eq!(schemas[0].schema_type, "json-schema");
+    assert_eq!(schemas[1].uri, "urn:ojs:schema:report.generate");
+    assert_eq!(schemas[1].version, "2.0.0");
+}
+
+#[tokio::test]
+async fn test_register_schema() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/ojs/v1/schemas"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "uri": "urn:ojs:schema:email.send",
+            "type": "json-schema",
+            "version": "1.0.0",
+            "created_at": "2025-01-01T00:00:00Z",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "to": {"type": "string"}
+                },
+                "required": ["to"]
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::builder().url(server.uri()).build().unwrap();
+    let detail = client
+        .register_schema(ojs::RegisterSchemaRequest {
+            uri: "urn:ojs:schema:email.send".into(),
+            schema_type: "json-schema".into(),
+            version: "1.0.0".into(),
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "to": {"type": "string"}
+                },
+                "required": ["to"]
+            }),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(detail.uri, "urn:ojs:schema:email.send");
+    assert_eq!(detail.schema_type, "json-schema");
+    assert_eq!(detail.version, "1.0.0");
+    assert!(detail.schema.is_object());
+}
+
+#[tokio::test]
+async fn test_get_schema() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/ojs/v1/schemas/urn%3Aojs%3Aschema%3Aemail%2Esend"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "uri": "urn:ojs:schema:email.send",
+            "type": "json-schema",
+            "version": "1.0.0",
+            "created_at": "2025-01-01T00:00:00Z",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "to": {"type": "string"}
+                }
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::builder().url(server.uri()).build().unwrap();
+    let detail = client.get_schema("urn:ojs:schema:email.send").await.unwrap();
+
+    assert_eq!(detail.uri, "urn:ojs:schema:email.send");
+    assert_eq!(detail.schema_type, "json-schema");
+    assert!(detail.schema.is_object());
+}
+
+#[tokio::test]
+async fn test_delete_schema() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("DELETE"))
+        .and(path("/ojs/v1/schemas/urn%3Aojs%3Aschema%3Aemail%2Esend"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::builder().url(server.uri()).build().unwrap();
+    client.delete_schema("urn:ojs:schema:email.send").await.unwrap();
+}
