@@ -1,0 +1,29 @@
+name: API Compatibility
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  semver-checks:
+    name: Rust API Compatibility Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-semver-checks
+        run: cargo install cargo-semver-checks
+
+      - name: Check semver compatibility
+        run: |
+          cargo semver-checks check-release 2>&1 || {
+            echo "::error::Semver-incompatible changes detected. Bump the major/minor version or add 'breaking-change' label."
+            exit 1
+          }
