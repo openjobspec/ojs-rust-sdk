@@ -92,6 +92,11 @@ pub mod tracing_mw;
 #[cfg_attr(docsrs, doc(cfg(feature = "common-middleware")))]
 pub mod middleware_common;
 
+/// Native OpenTelemetry tracing and metrics middleware.
+#[cfg(feature = "otel-middleware")]
+#[cfg_attr(docsrs, doc(cfg(feature = "otel-middleware")))]
+pub mod otel;
+
 // ---------------------------------------------------------------------------
 // Public re-exports
 // ---------------------------------------------------------------------------

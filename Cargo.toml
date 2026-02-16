@@ -20,6 +20,7 @@ uuid = { version = "1", features = ["v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 percent-encoding = "2"
+opentelemetry = { version = "0.28", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -32,6 +33,7 @@ reqwest-transport = ["dep:reqwest"]
 testing = []
 tracing-middleware = []
 common-middleware = []
+otel-middleware = ["dep:opentelemetry"]
 
 [package.metadata.docs.rs]
 all-features = true
