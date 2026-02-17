@@ -1,4 +1,4 @@
-use crate::errors::{ErrorResponse, OjsError, ServerError};
+use crate::errors::{ErrorResponse, OjsError, RateLimitInfo, ServerError};
 use crate::transport::{Method, Transport};
 use std::collections::HashMap;
 use std::future::Future;
@@ -84,8 +84,10 @@ impl HttpTransport {
         let status = response.status();
 
         if !status.is_success() {
+            let retry_after = parse_retry_after_header(response.headers());
+            let rate_limit = parse_rate_limit_headers(response.headers(), retry_after);
             let body = response.bytes().await?;
-            return Err(parse_error_response(&body, status.as_u16()));
+            return Err(parse_error_response(&body, status.as_u16(), retry_after, rate_limit));
         }
 
         let body = response.bytes().await?;
@@ -151,9 +153,17 @@ impl Transport for HttpTransport {
 // Error response parsing
 // ---------------------------------------------------------------------------
 
-fn parse_error_response(body: &[u8], status_code: u16) -> OjsError {
+fn parse_error_response(
+    body: &[u8],
+    status_code: u16,
+    retry_after: Option<std::time::Duration>,
+    rate_limit: Option<RateLimitInfo>,
+) -> OjsError {
     if let Ok(err_resp) = serde_json::from_slice::<ErrorResponse>(body) {
-        OjsError::Server(Box::new(err_resp.error.into_server_error(status_code)))
+        let mut server_err = err_resp.error.into_server_error(status_code);
+        server_err.retry_after = retry_after;
+        server_err.rate_limit = rate_limit;
+        OjsError::Server(Box::new(server_err))
     } else {
         let message = String::from_utf8_lossy(body).to_string();
         OjsError::Server(Box::new(ServerError {
@@ -167,8 +177,44 @@ fn parse_error_response(body: &[u8], status_code: u16) -> OjsError {
             details: None,
             request_id: None,
             http_status: status_code,
-            retry_after: None,
-            rate_limit: None,
+            retry_after,
+            rate_limit,
         }))
     }
+}
+
+/// Parse the `Retry-After` header value into a `Duration`.
+#[cfg(feature = "reqwest-transport")]
+fn parse_retry_after_header(headers: &reqwest::header::HeaderMap) -> Option<std::time::Duration> {
+    let raw = headers.get("Retry-After")?.to_str().ok()?;
+    let seconds: f64 = raw.parse().ok()?;
+    Some(std::time::Duration::from_secs_f64(seconds))
+}
+
+/// Parse rate limit headers into a `RateLimitInfo`.
+#[cfg(feature = "reqwest-transport")]
+fn parse_rate_limit_headers(
+    headers: &reqwest::header::HeaderMap,
+    retry_after: Option<std::time::Duration>,
+) -> Option<RateLimitInfo> {
+    let limit = headers.get("X-RateLimit-Limit")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<i64>().ok());
+    let remaining = headers.get("X-RateLimit-Remaining")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<i64>().ok());
+    let reset = headers.get("X-RateLimit-Reset")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<i64>().ok());
+
+    if limit.is_none() && remaining.is_none() && reset.is_none() && retry_after.is_none() {
+        return None;
+    }
+
+    Some(RateLimitInfo {
+        limit,
+        remaining,
+        reset,
+        retry_after,
+    })
 }

@@ -281,6 +281,87 @@ async fn test_rate_limit_error() {
             assert!(server_err.is_rate_limited());
             assert!(server_err.is_retryable());
             assert_eq!(server_err.http_status, 429);
+            assert!(server_err.retry_after().is_none());
+        }
+        other => panic!("expected Server error, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_rate_limit_error_with_retry_after() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/ojs/v1/jobs"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .append_header("Retry-After", "30")
+                .set_body_json(json!({
+                    "error": {
+                        "code": "rate_limited",
+                        "message": "too many requests",
+                        "retryable": true
+                    }
+                })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::builder().url(server.uri()).build().unwrap();
+    let err = client.enqueue("test", json!({})).await.unwrap_err();
+
+    match err {
+        OjsError::Server(server_err) => {
+            assert!(server_err.is_rate_limited());
+            assert_eq!(
+                server_err.retry_after(),
+                Some(std::time::Duration::from_secs(30))
+            );
+        }
+        other => panic!("expected Server error, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_rate_limit_error_with_full_headers() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/ojs/v1/jobs"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .append_header("Retry-After", "60")
+                .append_header("X-RateLimit-Limit", "1000")
+                .append_header("X-RateLimit-Remaining", "0")
+                .append_header("X-RateLimit-Reset", "1700000000")
+                .set_body_json(json!({
+                    "error": {
+                        "code": "rate_limited",
+                        "message": "too many requests",
+                        "retryable": true
+                    }
+                })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::builder().url(server.uri()).build().unwrap();
+    let err = client.enqueue("test", json!({})).await.unwrap_err();
+
+    match err {
+        OjsError::Server(server_err) => {
+            assert!(server_err.is_rate_limited());
+            assert_eq!(
+                server_err.retry_after(),
+                Some(std::time::Duration::from_secs(60))
+            );
+            let rl = server_err.rate_limit().expect("rate_limit should be set");
+            assert_eq!(rl.limit, Some(1000));
+            assert_eq!(rl.remaining, Some(0));
+            assert_eq!(rl.reset, Some(1700000000));
+            assert_eq!(rl.retry_after, Some(std::time::Duration::from_secs(60)));
         }
         other => panic!("expected Server error, got: {:?}", other),
     }
