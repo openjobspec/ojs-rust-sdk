@@ -8,6 +8,8 @@
 
 The official Rust SDK for the [Open Job Spec](https://openjobspec.org) (OJS) protocol. OJS is a language-agnostic specification for background job processing, providing interoperability across languages and backends.
 
+> **🚀 Try it now:** [Open in Playground](https://playground.openjobspec.org?lang=rust) · [Run on CodeSandbox](https://codesandbox.io/p/sandbox/openjobspec-rust-quickstart) · [Docker Quickstart](https://github.com/openjobspec/openjobspec/blob/main/docker-compose.quickstart.yml)
+
 ## Features
 
 - **Async-first** - Built on `tokio` for high-performance async I/O
@@ -16,7 +18,7 @@ The official Rust SDK for the [Open Job Spec](https://openjobspec.org) (OJS) pro
 - **Middleware** - Tower-inspired middleware chain for cross-cutting concerns (logging, tracing, metrics, OpenTelemetry)
 - **Workflows** - Chain, group, and batch workflow primitives
 - **Builder pattern** - Ergonomic client and worker configuration
-- **Full OJS compliance** - Implements OJS v1.0.0-rc.1 specification
+- **Full OJS compliance** - Implements OJS v1.0 specification
 
 ## Installation
 
