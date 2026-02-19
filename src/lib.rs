@@ -68,6 +68,7 @@
 
 pub mod client;
 pub mod config;
+pub mod error_codes;
 pub mod errors;
 pub mod events;
 pub mod job;
