@@ -40,7 +40,7 @@ async fn test_worker_processes_and_acks_job() {
         .and(path("/ojs/v1/workers/fetch"))
         .respond_with(FetchResponder::new(json!({
             "jobs": [{
-                "specversion": "1.0.0-rc.1",
+                "specversion": "1.0",
                 "id": "job-ack-001",
                 "type": "test.success",
                 "queue": "default",
@@ -107,7 +107,7 @@ async fn test_worker_nacks_on_handler_error() {
         .and(path("/ojs/v1/workers/fetch"))
         .respond_with(FetchResponder::new(json!({
             "jobs": [{
-                "specversion": "1.0.0-rc.1",
+                "specversion": "1.0",
                 "id": "job-nack-001",
                 "type": "test.failure",
                 "queue": "default",
@@ -169,7 +169,7 @@ async fn test_worker_nacks_unregistered_job_type() {
         .and(path("/ojs/v1/workers/fetch"))
         .respond_with(FetchResponder::new(json!({
             "jobs": [{
-                "specversion": "1.0.0-rc.1",
+                "specversion": "1.0",
                 "id": "job-unreg-001",
                 "type": "unknown.job.type",
                 "queue": "default",
@@ -228,7 +228,7 @@ async fn test_worker_middleware_executes() {
         .and(path("/ojs/v1/workers/fetch"))
         .respond_with(FetchResponder::new(json!({
             "jobs": [{
-                "specversion": "1.0.0-rc.1",
+                "specversion": "1.0",
                 "id": "job-mw-001",
                 "type": "test.middleware",
                 "queue": "default",

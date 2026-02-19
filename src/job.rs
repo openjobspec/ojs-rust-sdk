@@ -327,7 +327,7 @@ impl Job {
 }
 
 fn default_specversion() -> String {
-    "1.0.0-rc.1".to_string()
+    "1.0".to_string()
 }
 
 fn default_queue() -> String {
@@ -472,7 +472,7 @@ mod tests {
     #[test]
     fn test_job_arg_extraction_from_array() {
         let job = Job {
-            specversion: "1.0.0-rc.1".into(),
+            specversion: "1.0".into(),
             id: "test".into(),
             job_type: "email.send".into(),
             queue: "default".into(),

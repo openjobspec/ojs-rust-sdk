@@ -10,7 +10,7 @@ use serde_json::json;
 #[test]
 fn test_job_deserialize_complete() {
     let json = json!({
-        "specversion": "1.0.0-rc.1",
+        "specversion": "1.0",
         "id": "019461a8-1a2b-7c3d-8e4f-5a6b7c8d9e0f",
         "type": "email.send",
         "queue": "email",
@@ -64,7 +64,7 @@ fn test_job_deserialize_minimal() {
     assert_eq!(job.id, "minimal-job-001");
     assert_eq!(job.job_type, "test.minimal");
     assert_eq!(job.queue, "default");
-    assert_eq!(job.specversion, "1.0.0-rc.1");
+    assert_eq!(job.specversion, "1.0");
     assert_eq!(job.priority, 0);
     assert_eq!(job.attempt, 0);
     assert!(job.state.is_none());

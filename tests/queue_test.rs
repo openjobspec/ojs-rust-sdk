@@ -199,7 +199,7 @@ fn test_health_status_minimal() {
 #[test]
 fn test_manifest_serialization() {
     let json = json!({
-        "ojs_version": "1.0.0-rc.1",
+        "ojs_version": "1.0",
         "implementation": {
             "name": "ojs-backend-redis",
             "version": "0.1.0",
@@ -228,7 +228,7 @@ fn test_manifest_serialization() {
 
     let manifest: Manifest = serde_json::from_value(json).unwrap();
 
-    assert_eq!(manifest.ojs_version, "1.0.0-rc.1");
+    assert_eq!(manifest.ojs_version, "1.0");
     assert_eq!(manifest.implementation.name, "ojs-backend-redis");
     assert_eq!(manifest.conformance_level, 4);
     assert!(manifest.capabilities.batch_enqueue);
@@ -239,14 +239,14 @@ fn test_manifest_serialization() {
     // Roundtrip
     let json_str = serde_json::to_string(&manifest).unwrap();
     let roundtrip: Manifest = serde_json::from_str(&json_str).unwrap();
-    assert_eq!(roundtrip.ojs_version, "1.0.0-rc.1");
+    assert_eq!(roundtrip.ojs_version, "1.0");
     assert_eq!(roundtrip.implementation.name, "ojs-backend-redis");
 }
 
 #[test]
 fn test_manifest_capabilities_default() {
     let json = json!({
-        "ojs_version": "1.0.0-rc.1",
+        "ojs_version": "1.0",
         "implementation": {"name": "test", "version": "0.1.0", "language": "Rust"},
         "conformance_level": 0,
         "protocols": ["http"],

@@ -64,7 +64,7 @@
 //! - **Type-safe**: Strong typing with serde serialization
 //! - **Middleware**: Tower-inspired middleware chain for cross-cutting concerns
 //! - **Workflows**: Chain, group, and batch workflow primitives
-//! - **Full OJS compliance**: Implements the complete OJS v1.0.0-rc.1 specification
+//! - **Full OJS compliance**: Implements the complete OJS v1.0 specification
 
 pub mod client;
 pub mod config;
@@ -120,4 +120,4 @@ pub use workflow::{
 };
 
 /// The OJS specification version implemented by this SDK.
-pub const OJS_VERSION: &str = "1.0.0-rc.1";
+pub const OJS_VERSION: &str = "1.0";

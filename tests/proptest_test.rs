@@ -48,7 +48,7 @@ fn arb_job() -> impl Strategy<Value = serde_json::Value> {
     )
         .prop_map(|(job_type, queue, args, priority)| {
             serde_json::json!({
-                "specversion": "1.0.0-rc.1",
+                "specversion": "1.0",
                 "id": format!("01234567-89ab-7cde-8000-{:012x}", priority as u64),
                 "type": job_type,
                 "queue": queue,

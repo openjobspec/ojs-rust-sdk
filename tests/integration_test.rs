@@ -183,7 +183,7 @@ fn test_step_with_options() {
 #[test]
 fn test_job_deserialize_from_server() {
     let json = json!({
-        "specversion": "1.0.0-rc.1",
+        "specversion": "1.0",
         "id": "019461a8-1a2b-7c3d-8e4f-5a6b7c8d9e0f",
         "type": "email.send",
         "queue": "default",
@@ -208,7 +208,7 @@ fn test_job_deserialize_from_server() {
 #[test]
 fn test_job_arg_extraction() {
     let json = json!({
-        "specversion": "1.0.0-rc.1",
+        "specversion": "1.0",
         "id": "test-id",
         "type": "test",
         "queue": "default",
@@ -240,7 +240,7 @@ fn test_job_args_as_struct() {
     }
 
     let json = json!({
-        "specversion": "1.0.0-rc.1",
+        "specversion": "1.0",
         "id": "test-id",
         "type": "email.send",
         "queue": "default",

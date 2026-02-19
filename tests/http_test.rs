@@ -8,7 +8,7 @@ const OJS_CONTENT_TYPE: &str = "application/openjobspec+json";
 fn job_response(id: &str, job_type: &str) -> serde_json::Value {
     json!({
         "job": {
-            "specversion": "1.0.0-rc.1",
+            "specversion": "1.0",
             "id": id,
             "type": job_type,
             "queue": "default",
@@ -35,7 +35,7 @@ async fn test_enqueue_simple() {
         .and(path("/ojs/v1/jobs"))
         .and(header("Content-Type", OJS_CONTENT_TYPE))
         .and(header("Accept", OJS_CONTENT_TYPE))
-        .and(header("OJS-Version", "1.0.0-rc.1"))
+        .and(header("OJS-Version", "1.0"))
         .respond_with(
             ResponseTemplate::new(201).set_body_json(job_response("job-001", "email.send")),
         )
@@ -118,7 +118,7 @@ async fn test_batch_enqueue() {
         .respond_with(ResponseTemplate::new(201).set_body_json(json!({
             "jobs": [
                 {
-                    "specversion": "1.0.0-rc.1",
+                    "specversion": "1.0",
                     "id": "batch-1",
                     "type": "notify",
                     "queue": "default",
@@ -129,7 +129,7 @@ async fn test_batch_enqueue() {
                     "tags": []
                 },
                 {
-                    "specversion": "1.0.0-rc.1",
+                    "specversion": "1.0",
                     "id": "batch-2",
                     "type": "notify",
                     "queue": "default",
@@ -172,7 +172,7 @@ async fn test_get_job() {
     Mock::given(method("GET"))
         .and(path("/ojs/v1/jobs/job-123"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "specversion": "1.0.0-rc.1",
+            "specversion": "1.0",
             "id": "job-123",
             "type": "email.send",
             "queue": "default",
