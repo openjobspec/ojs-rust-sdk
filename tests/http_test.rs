@@ -1,4 +1,4 @@
-use ojs::{Client, JobRequest, OjsError, RetryPolicy};
+use ojs::{Client, JobRequest, OjsError, RetryConfig, RetryPolicy};
 use serde_json::json;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -201,7 +201,7 @@ async fn test_cancel_job() {
     Mock::given(method("DELETE"))
         .and(path("/ojs/v1/jobs/job-456"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "specversion": "1.0.0-rc.1",
+            "specversion": "1.0",
             "id": "job-456",
             "type": "test",
             "queue": "default",
@@ -273,7 +273,7 @@ async fn test_rate_limit_error() {
         .mount(&server)
         .await;
 
-    let client = Client::builder().url(server.uri()).build().unwrap();
+    let client = Client::builder().url(server.uri()).retry_config(RetryConfig::disabled()).build().unwrap();
     let err = client.enqueue("test", json!({})).await.unwrap_err();
 
     match err {
@@ -308,7 +308,7 @@ async fn test_rate_limit_error_with_retry_after() {
         .mount(&server)
         .await;
 
-    let client = Client::builder().url(server.uri()).build().unwrap();
+    let client = Client::builder().url(server.uri()).retry_config(RetryConfig::disabled()).build().unwrap();
     let err = client.enqueue("test", json!({})).await.unwrap_err();
 
     match err {
@@ -347,7 +347,7 @@ async fn test_rate_limit_error_with_full_headers() {
         .mount(&server)
         .await;
 
-    let client = Client::builder().url(server.uri()).build().unwrap();
+    let client = Client::builder().url(server.uri()).retry_config(RetryConfig::disabled()).build().unwrap();
     let err = client.enqueue("test", json!({})).await.unwrap_err();
 
     match err {

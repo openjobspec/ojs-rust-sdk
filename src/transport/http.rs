@@ -1,4 +1,5 @@
 use crate::errors::{ErrorResponse, OjsError, RateLimitInfo, ServerError};
+use crate::rate_limiter::RetryConfig;
 use crate::transport::{Method, Transport};
 use std::collections::HashMap;
 use std::future::Future;
@@ -15,6 +16,7 @@ pub(crate) struct HttpTransport {
     client: reqwest::Client,
     auth_token: Option<String>,
     headers: HashMap<String, String>,
+    retry_config: RetryConfig,
 }
 
 /// Configuration used to construct an HttpTransport from client settings.
@@ -23,6 +25,7 @@ pub(crate) struct TransportConfig {
     pub auth_token: Option<String>,
     pub headers: HashMap<String, String>,
     pub timeout: Option<std::time::Duration>,
+    pub retry_config: Option<RetryConfig>,
     #[cfg(feature = "reqwest-transport")]
     pub http_client: Option<reqwest::Client>,
 }
@@ -45,6 +48,7 @@ impl HttpTransport {
             client,
             auth_token: config.auth_token,
             headers: config.headers,
+            retry_config: config.retry_config.unwrap_or_default(),
         }
     }
 
@@ -105,6 +109,35 @@ impl HttpTransport {
 
         Ok(Some(value))
     }
+
+    #[cfg(feature = "reqwest-transport")]
+    fn build_request(
+        &self,
+        method: Method,
+        url: &str,
+        body: &Option<serde_json::Value>,
+    ) -> reqwest::RequestBuilder {
+        match method {
+            Method::Get => self.client.get(url),
+            Method::Post => {
+                let r = self.client.post(url);
+                if let Some(body) = body {
+                    r.body(serde_json::to_vec(body).unwrap_or_default())
+                } else {
+                    r
+                }
+            }
+            Method::Delete => self.client.delete(url),
+            Method::Patch => {
+                let r = self.client.patch(url);
+                if let Some(body) = body {
+                    r.body(serde_json::to_vec(body).unwrap_or_default())
+                } else {
+                    r
+                }
+            }
+        }
+    }
 }
 
 #[cfg(feature = "reqwest-transport")]
@@ -123,28 +156,45 @@ impl Transport for HttpTransport {
         };
 
         Box::pin(async move {
-            let req = match method {
-                Method::Get => self.client.get(&url),
-                Method::Post => {
-                    let r = self.client.post(&url);
-                    if let Some(body) = &body {
-                        r.body(serde_json::to_vec(body).unwrap_or_default())
-                    } else {
-                        r
-                    }
-                }
-                Method::Delete => self.client.delete(&url),
-                Method::Patch => {
-                    let r = self.client.patch(&url);
-                    if let Some(body) = &body {
-                        r.body(serde_json::to_vec(body).unwrap_or_default())
-                    } else {
-                        r
-                    }
-                }
+            let max_attempts = if self.retry_config.enabled {
+                self.retry_config.max_retries + 1
+            } else {
+                1
             };
 
-            self.execute(req).await
+            for attempt in 0..max_attempts {
+                let req = self.build_request(method, &url, &body);
+                match self.execute(req).await {
+                    Ok(val) => return Ok(val),
+                    Err(err) => {
+                        let is_last = attempt + 1 >= max_attempts;
+                        if is_last {
+                            return Err(err);
+                        }
+
+                        // Only retry on 429 (rate limited) responses.
+                        let retry_after = match &err {
+                            OjsError::Server(ref server_err) if server_err.http_status == 429 => {
+                                server_err.retry_after
+                            }
+                            _ => return Err(err),
+                        };
+
+                        let delay = self.retry_config.compute_backoff(attempt, retry_after);
+                        tracing::warn!(
+                            attempt = attempt + 1,
+                            max_attempts,
+                            delay_ms = delay.as_millis() as u64,
+                            "rate limited, retrying after backoff"
+                        );
+                        // Cancel-safe: dropping this future (e.g. when the caller's
+                        // task is cancelled) immediately cancels the sleep.
+                        tokio::time::sleep(delay).await;
+                    }
+                }
+            }
+
+            unreachable!("retry loop should have returned")
         })
     }
 }

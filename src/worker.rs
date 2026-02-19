@@ -113,6 +113,7 @@ pub struct WorkerBuilder {
     auth_token: Option<String>,
     headers: HashMap<String, String>,
     timeout: Option<Duration>,
+    retry_config: Option<crate::rate_limiter::RetryConfig>,
     #[cfg(feature = "reqwest-transport")]
     http_client: Option<reqwest::Client>,
 }
@@ -130,6 +131,7 @@ impl WorkerBuilder {
             auth_token: None,
             headers: HashMap::new(),
             timeout: None,
+            retry_config: None,
             #[cfg(feature = "reqwest-transport")]
             http_client: None,
         }
@@ -210,6 +212,16 @@ impl WorkerBuilder {
         self
     }
 
+    /// Set the retry configuration for rate-limited responses.
+    ///
+    /// By default, the worker retries up to 3 times on `429 Too Many Requests`
+    /// responses with exponential backoff. Use [`RetryConfig::disabled()`] to
+    /// turn off automatic retries.
+    pub fn retry_config(mut self, config: crate::rate_limiter::RetryConfig) -> Self {
+        self.retry_config = Some(config);
+        self
+    }
+
     /// Build the worker.
     pub fn build(self) -> crate::Result<Worker> {
         let url = self
@@ -222,6 +234,7 @@ impl WorkerBuilder {
                 auth_token: self.auth_token,
                 headers: self.headers,
                 timeout: self.timeout,
+                retry_config: self.retry_config,
                 #[cfg(feature = "reqwest-transport")]
                 http_client: self.http_client,
             },

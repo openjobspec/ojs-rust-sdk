@@ -74,6 +74,7 @@ pub mod events;
 pub mod job;
 pub mod middleware;
 pub mod queue;
+pub mod rate_limiter;
 pub mod retry;
 pub mod schema;
 #[cfg(feature = "testing")]
@@ -105,6 +106,7 @@ pub mod otel;
 pub use client::{Client, ClientBuilder, EnqueueBuilder, JobRequest};
 pub use config::ConnectionConfig;
 pub use errors::{JobError, OjsError, RateLimitInfo, Result, ServerError};
+pub use rate_limiter::RetryConfig;
 pub use events::Event;
 pub use job::{ConflictStrategy, Job, JobState, UniqueDimension, UniquePolicy};
 pub use middleware::{BoxFuture, FnMiddleware, HandlerResult, Middleware, Next};
