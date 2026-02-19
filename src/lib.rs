@@ -99,6 +99,11 @@ pub mod middleware_common;
 #[cfg_attr(docsrs, doc(cfg(feature = "otel-middleware")))]
 pub mod otel;
 
+/// Serverless adapters for AWS Lambda and other FaaS platforms.
+#[cfg(feature = "serverless-lambda")]
+#[cfg_attr(docsrs, doc(cfg(feature = "serverless-lambda")))]
+pub mod serverless;
+
 // ---------------------------------------------------------------------------
 // Public re-exports
 // ---------------------------------------------------------------------------

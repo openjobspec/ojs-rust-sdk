@@ -21,6 +21,8 @@ chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 percent-encoding = "2"
 opentelemetry = { version = "0.28", optional = true }
+lambda_runtime = { version = "0.13", optional = true }
+aws_lambda_events = { version = "0.15", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -35,6 +37,7 @@ testing = []
 tracing-middleware = []
 common-middleware = []
 otel-middleware = ["dep:opentelemetry"]
+serverless-lambda = ["dep:lambda_runtime", "dep:aws_lambda_events"]
 
 [package.metadata.docs.rs]
 all-features = true
