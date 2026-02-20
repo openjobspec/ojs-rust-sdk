@@ -80,3 +80,4 @@ impl Middleware for LoggingMiddleware {
         })
     }
 }
+
