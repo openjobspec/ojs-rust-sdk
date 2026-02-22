@@ -1,3 +1,5 @@
+#![allow(clippy::approx_constant)]
+
 use ojs::job::{ConflictStrategy, JobState, UniqueDimension, UniquePolicy};
 use ojs::retry::{OnExhaustion, RetryPolicy};
 use ojs::{Job, JobRequest};

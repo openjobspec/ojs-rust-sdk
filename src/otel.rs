@@ -103,7 +103,7 @@ impl Middleware for OtelTracingMiddleware {
                     span.set_status(Status::Error {
                         description: e.to_string().into(),
                     });
-                    span.record_error(&*e);
+                    span.record_error(e);
                 }
             }
 
