@@ -110,6 +110,9 @@ pub mod transport;
 pub mod worker;
 pub mod workflow;
 
+/// Server-Sent Events (SSE) subscription for real-time job events.
+pub mod subscribe;
+
 /// Tracing middleware for structured job processing instrumentation.
 #[cfg(feature = "tracing-middleware")]
 #[cfg_attr(docsrs, doc(cfg(feature = "tracing-middleware")))]
