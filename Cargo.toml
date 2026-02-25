@@ -20,7 +20,7 @@ uuid = { version = "1", features = ["v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 percent-encoding = "2"
-opentelemetry = { version = "0.28", optional = true }
+opentelemetry = { version = "0.31", optional = true }
 lambda_runtime = { version = "0.13", optional = true }
 aws_lambda_events = { version = "0.15", optional = true }
 
