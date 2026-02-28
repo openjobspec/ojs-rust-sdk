@@ -295,3 +295,4 @@ The minimum supported Rust version is **1.75**.
 ## License
 
 Apache-2.0
+
