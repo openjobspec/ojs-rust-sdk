@@ -343,3 +343,4 @@ fn test_job_args_as_struct() {
     assert_eq!(args.name, "Alice");
     assert_eq!(args.count, 5);
 }
+
