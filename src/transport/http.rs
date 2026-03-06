@@ -116,13 +116,16 @@ impl HttpTransport {
         method: Method,
         url: &str,
         body: &Option<serde_json::Value>,
-    ) -> reqwest::RequestBuilder {
-        match method {
+    ) -> crate::Result<reqwest::RequestBuilder> {
+        Ok(match method {
             Method::Get => self.client.get(url),
             Method::Post => {
                 let r = self.client.post(url);
                 if let Some(body) = body {
-                    r.body(serde_json::to_vec(body).unwrap_or_default())
+                    let bytes = serde_json::to_vec(body).map_err(|e| {
+                        OjsError::Serialization(format!("failed to serialize request body: {e}"))
+                    })?;
+                    r.body(bytes)
                 } else {
                     r
                 }
@@ -131,12 +134,15 @@ impl HttpTransport {
             Method::Patch => {
                 let r = self.client.patch(url);
                 if let Some(body) = body {
-                    r.body(serde_json::to_vec(body).unwrap_or_default())
+                    let bytes = serde_json::to_vec(body).map_err(|e| {
+                        OjsError::Serialization(format!("failed to serialize request body: {e}"))
+                    })?;
+                    r.body(bytes)
                 } else {
                     r
                 }
             }
-        }
+        })
     }
 }
 
@@ -163,7 +169,7 @@ impl Transport for HttpTransport {
             };
 
             for attempt in 0..max_attempts {
-                let req = self.build_request(method, &url, &body);
+                let req = self.build_request(method, &url, &body)?;
                 match self.execute(req).await {
                     Ok(val) => return Ok(val),
                     Err(err) => {
