@@ -118,6 +118,11 @@ pub mod subscribe;
 #[cfg_attr(docsrs, doc(cfg(feature = "tracing-middleware")))]
 pub mod tracing_mw;
 
+/// AES-256-GCM encryption middleware for transparent job argument encryption/decryption.
+#[cfg(feature = "encryption")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]
+pub mod encryption;
+
 /// Common middleware implementations (logging, timeout, metrics).
 #[cfg(feature = "common-middleware")]
 #[cfg_attr(docsrs, doc(cfg(feature = "common-middleware")))]

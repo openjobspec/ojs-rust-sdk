@@ -18,6 +18,9 @@ tokio = { version = "1", features = ["rt", "sync", "time", "macros", "signal"] }
 reqwest = { version = "0.12", features = ["json"], optional = true }
 uuid = { version = "1", features = ["v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+rand = "0.8"
+aes-gcm = { version = "0.10", optional = true }
+base64 = { version = "0.22", optional = true }
 tracing = "0.1"
 percent-encoding = "2"
 opentelemetry = { version = "0.28", optional = true }
@@ -38,6 +41,7 @@ tracing-middleware = []
 common-middleware = []
 otel-middleware = ["dep:opentelemetry"]
 serverless-lambda = ["dep:lambda_runtime", "dep:aws_lambda_events"]
+encryption = ["dep:aes-gcm", "dep:base64"]
 
 [package.metadata.docs.rs]
 all-features = true
