@@ -46,3 +46,4 @@ encryption = ["dep:aes-gcm", "dep:base64"]
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
