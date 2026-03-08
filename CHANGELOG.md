@@ -24,3 +24,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - URL encoding for path segments and query parameters
 - Wiremock-based integration test suite
 - GitHub Actions CI workflow (fmt, clippy, test, doc)
+
