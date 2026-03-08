@@ -51,3 +51,4 @@ When using the OJS SDK in production:
 - **Pin dependencies:** Use `Cargo.lock` in your applications (not libraries)
   and run `cargo audit` regularly.
 - **Keep updated:** Watch for new releases and security advisories.
+
