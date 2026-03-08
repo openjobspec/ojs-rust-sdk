@@ -65,7 +65,8 @@ impl HttpTransport {
         req = req
             .header("Content-Type", OJS_CONTENT_TYPE)
             .header("Accept", OJS_CONTENT_TYPE)
-            .header("OJS-Version", crate::OJS_VERSION);
+            .header("OJS-Version", crate::OJS_VERSION)
+            .header("X-Request-ID", uuid::Uuid::new_v4().to_string());
 
         if let Some(ref token) = self.auth_token {
             req = req.header("Authorization", format!("Bearer {}", token));
