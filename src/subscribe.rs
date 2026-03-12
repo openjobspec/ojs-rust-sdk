@@ -112,12 +112,18 @@ pub async fn subscribe(
                         }
                     }
                     event_type.clear();
-                } else if let Some(val) = line.strip_prefix("event: ") {
-                    event_type = val.to_string();
-                } else if let Some(val) = line.strip_prefix("id: ") {
-                    event_id = val.to_string();
-                } else if let Some(val) = line.strip_prefix("data: ") {
-                    event_data = val.to_string();
+                } else if let Some(val) = line.strip_prefix("event:") {
+                    event_type = val.trim_start().to_string();
+                } else if let Some(val) = line.strip_prefix("id:") {
+                    event_id = val.trim_start().to_string();
+                } else if let Some(val) = line.strip_prefix("data:") {
+                    let chunk = val.trim_start();
+                    if event_data.is_empty() {
+                        event_data = chunk.to_string();
+                    } else {
+                        event_data.push('\n');
+                        event_data.push_str(chunk);
+                    }
                 }
             }
         }

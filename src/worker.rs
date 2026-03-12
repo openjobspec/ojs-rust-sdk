@@ -569,7 +569,10 @@ impl Worker {
                     }
 
                     for job in jobs {
-                        let permit = semaphore.clone().acquire_owned().await.unwrap();
+                        let permit = match semaphore.clone().acquire_owned().await {
+                            Ok(p) => p,
+                            Err(_) => break, // Semaphore closed — shutting down
+                        };
                         let job_id = job.id.clone();
 
                         // Track active job

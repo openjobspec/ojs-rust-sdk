@@ -26,7 +26,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ojs = "0.1"
+ojs = "0.3"
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```
@@ -216,7 +216,7 @@ Native OTel tracing and metrics (enable `otel-middleware` feature):
 
 ```toml
 [dependencies]
-ojs = { version = "0.1", features = ["otel-middleware"] }
+ojs = { version = "0.2", features = ["otel-middleware"] }
 ```
 
 ```rust

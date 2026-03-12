@@ -179,10 +179,16 @@ impl Transport for HttpTransport {
                             return Err(err);
                         }
 
-                        // Only retry on 429 (rate limited) responses.
+                        // Retry on 429 (rate limited) and optionally on 502/503/504.
                         let retry_after = match &err {
                             OjsError::Server(ref server_err) if server_err.http_status == 429 => {
                                 server_err.retry_after
+                            }
+                            OjsError::Server(ref server_err)
+                                if self.retry_config.retry_server_errors
+                                    && matches!(server_err.http_status, 502 | 503 | 504) =>
+                            {
+                                None
                             }
                             _ => return Err(err),
                         };

@@ -1,0 +1,357 @@
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║              RUST SDK - TEST PATTERNS & CODE EXAMPLES                         ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+
+🔍 PATTERN 1: HTTP CLIENT TESTING (from http_test.rs)
+─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_enqueue_simple() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/ojs/v1/jobs"))
+        .and(header("Content-Type", "application/openjobspec+json"))
+        .respond_with(
+            ResponseTemplate::new(201).set_body_json(job_response("job-001", "email.send"))
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::builder().url(server.uri()).build().unwrap();
+    let job = client.enqueue("email.send", json!({"to": "user@example.com"})).await.unwrap();
+
+    assert_eq!(job.id, "job-001");
+    assert_eq!(job.job_type, "email.send");
+}
+
+KEY POINTS:
+  • MockServer::start().await - Create isolated mock HTTP server
+  • Mock::given().and().and() - Chain matchers for request validation
+  • .expect(1) - Assert endpoint called exactly once
+  • .mount(&server).await - Register mock
+  • server.uri() - Use mock server URL
+  • ResponseTemplate::new(201).set_body_json() - Mock response
+
+
+🔍 PATTERN 2: STATEFUL MOCK RESPONSES (from worker_integration_test.rs)
+─────────────────────────────────────────────────────────────────────────────
+
+struct FetchResponder {
+    call_count: AtomicUsize,
+    jobs_response: serde_json::Value,
+}
+
+impl Respond for FetchResponder {
+    fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
+        let count = self.call_count.fetch_add(1, Ordering::SeqCst);
+        if count == 0 {
+            ResponseTemplate::new(200).set_body_json(&self.jobs_response)
+        } else {
+            ResponseTemplate::new(200).set_body_json(json!({"jobs": []}))
+        }
+    }
+}
+
+USAGE:
+Mock::given(method("POST"))
+    .and(path("/ojs/v1/workers/fetch"))
+    .respond_with(FetchResponder::new(jobs_json))
+    .mount(&server)
+    .await;
+
+KEY POINTS:
+  • Implement Respond trait for custom response logic
+  • Use AtomicUsize for call count tracking
+  • Return different responses based on call count
+  • First call: return jobs, second+: return empty
+
+
+🔍 PATTERN 3: WORKER HANDLER REGISTRATION (from worker_integration_test.rs)
+─────────────────────────────────────────────────────────────────────────────
+
+let worker = Worker::builder()
+    .url(server.uri())
+    .queues(vec!["default"])
+    .concurrency(1)
+    .poll_interval(std::time::Duration::from_millis(50))
+    .heartbeat_interval(std::time::Duration::from_secs(60))
+    .build()
+    .unwrap();
+
+worker.register("test.success", |_ctx: JobContext| async move {
+    Ok(json!({"status": "processed"}))
+}).await;
+
+// Run worker in background task with timeout
+let worker_handle = tokio::spawn(async move { worker.start().await });
+tokio::time::sleep(Duration::from_millis(500)).await;
+worker_handle.abort();
+
+KEY POINTS:
+  • WorkerBuilder requires URL
+  • .queues() sets priority order for fetching
+  • .concurrency() limits parallel job processing
+  • .poll_interval() controls fetch frequency
+  • .heartbeat_interval() sets heartbeat cadence
+  • register() takes async closure returning HandlerResult
+  • tokio::spawn() + .abort() for testing with timeout
+
+
+🔍 PATTERN 4: MIDDLEWARE TESTING (from middleware_test.rs)
+─────────────────────────────────────────────────────────────────────────────
+
+struct CountingMiddleware {
+    counter: Arc<AtomicUsize>,
+}
+
+impl Middleware for CountingMiddleware {
+    fn handle(&self, ctx: JobContext, next: Next) -> BoxFuture<'static, HandlerResult> {
+        self.counter.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move { next.run(ctx).await })
+    }
+}
+
+#[tokio::test]
+async fn test_single_middleware_wraps_handler() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let worker = test_worker();
+
+    worker.use_middleware("counting", CountingMiddleware {
+        counter: counter.clone(),
+    }).await;
+
+    worker.register("test.type", |_ctx: JobContext| async move {
+        Ok(json!({"done": true}))
+    }).await;
+
+    assert_eq!(counter.load(Ordering::SeqCst), 0);
+}
+
+KEY POINTS:
+  • Implement Middleware trait
+  • handle() receives JobContext and Next
+  • Call next.run(ctx).await to pass to next middleware/handler
+  • Can modify context before/after next
+  • Arc<AtomicUsize> for thread-safe counters
+  • test_worker() helper for minimal setup
+
+
+🔍 PATTERN 5: ORDER TRACKING MIDDLEWARE
+─────────────────────────────────────────────────────────────────────────────
+
+struct OrderTrackingMiddleware {
+    label: String,
+    order: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl Middleware for OrderTrackingMiddleware {
+    fn handle(&self, ctx: JobContext, next: Next) -> BoxFuture<'static, HandlerResult> {
+        let label = self.label.clone();
+        let order = self.order.clone();
+        Box::pin(async move {
+            order.lock().unwrap().push(format!("{}-before", label));
+            let result = next.run(ctx).await;
+            order.lock().unwrap().push(format!("{}-after", label));
+            result
+        })
+    }
+}
+
+#[tokio::test]
+async fn test_multiple_middleware_ordering() {
+    let order = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    
+    worker.use_middleware("first", OrderTrackingMiddleware {
+        label: "first".into(),
+        order: order.clone(),
+    }).await;
+    
+    worker.use_middleware("second", OrderTrackingMiddleware {
+        label: "second".into(),
+        order: order.clone(),
+    }).await;
+
+    // Verify execution order
+    let execution_order = order.lock().unwrap();
+    // Should be: ["first-before", "second-before", ..., "second-after", "first-after"]
+}
+
+KEY POINTS:
+  • Track execution before/after each middleware
+  • Use Mutex for synchronized access
+  • Verify middleware ordering
+  • First registered = outermost (runs first)
+
+
+🔍 PATTERN 6: ERROR TESTING (from error_test.rs)
+─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_parse_server_error() {
+    let response = json!({
+        "error": {
+            "code": "invalid_payload",
+            "message": "Job args do not match schema",
+            "retryable": false,
+            "details": {"schema_errors": ["..."]},
+            "request_id": "req-123"
+        }
+    });
+
+    let error_payload: ServerErrorPayload = serde_json::from_value(response["error"].clone()).unwrap();
+    let server_error = error_payload.into_server_error(400);
+
+    assert_eq!(server_error.code, "invalid_payload");
+    assert!(!server_error.is_retryable());
+    assert_eq!(server_error.http_status, 400);
+}
+
+KEY POINTS:
+  • Parse error responses with serde_json
+  • Verify error code, message, retryable flag
+  • Check HTTP status code
+  • Verify error details/request_id
+
+
+🔍 PATTERN 7: JOB DATA TESTING (from job_test.rs)
+─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_job_args_extraction() {
+    let job = Job {
+        args: json!([{"name": "John", "age": 30}]),
+        // ... other fields
+    };
+
+    let arg = job.arg(0).unwrap();
+    assert_eq!(arg.get("name").unwrap().as_str().unwrap(), "John");
+    
+    let name: String = job.arg::<serde_json::Value>(0)
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap();
+    assert_eq!(name, "John");
+}
+
+#[test]
+fn test_job_state_transitions() {
+    let mut job = job_with_state("available");
+    assert_eq!(job.state, JobState::Available);
+    
+    job.state = JobState::Active;
+    assert_eq!(job.state, JobState::Active);
+}
+
+KEY POINTS:
+  • Test .arg() method for safe extraction
+  • Test type conversions
+  • Test state enum handling
+  • Use helper functions like job_with_state()
+
+
+🔍 PATTERN 8: INTEGRATION TEST SETUP (from integration_test.rs)
+─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_full_flow_enqueue_to_ack() {
+    let server = MockServer::start().await;
+
+    // 1. Setup enqueue mock
+    Mock::given(method("POST")).and(path("/ojs/v1/jobs"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(job_response))
+        .mount(&server).await;
+
+    // 2. Setup fetch mock
+    Mock::given(method("POST")).and(path("/ojs/v1/workers/fetch"))
+        .respond_with(FetchResponder::new(jobs))
+        .mount(&server).await;
+
+    // 3. Setup ack mock
+    Mock::given(method("POST")).and(path("/ojs/v1/workers/ack"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server).await;
+
+    // 4. Create client and enqueue
+    let client = Client::builder().url(server.uri()).build().unwrap();
+    let job = client.enqueue("test.job", json!({})).await.unwrap();
+
+    // 5. Create worker and process
+    let worker = Worker::builder()
+        .url(server.uri())
+        .build()
+        .unwrap();
+    
+    worker.register("test.job", |_| async { Ok(json!({"done": true})) }).await;
+
+    // 6. Run with timeout
+    tokio::time::timeout(Duration::from_secs(1), worker.start()).await.ok();
+}
+
+KEY POINTS:
+  • Multiple Mock setups for multi-step flows
+  • Use .expect(n) to verify call count
+  • Setup client and worker with same server
+  • Use timeout to control test duration
+
+
+═════════════════════════════════════════════════════════════════════════════════
+
+🛠️ HELPER FUNCTIONS (from test files)
+
+fn test_worker() -> Worker {
+    Worker::builder()
+        .url("http://localhost:9999")
+        .build()
+        .unwrap()
+}
+
+fn job_response(id: &str, job_type: &str) -> serde_json::Value {
+    json!({
+        "job": {
+            "specversion": "1.0",
+            "id": id,
+            "type": job_type,
+            "queue": "default",
+            "args": [{"key": "value"}],
+            "state": "available",
+            "attempt": 0,
+            "priority": 0,
+            "created_at": "2025-01-01T00:00:00Z",
+            "enqueued_at": "2025-01-01T00:00:00Z",
+            "tags": []
+        }
+    })
+}
+
+═════════════════════════════════════════════════════════════════════════════════
+
+📋 TESTING CHECKLIST
+
+When adding new tests:
+
+✓ Import necessary items:
+  use ojs::{Worker, JobContext, Middleware, Next, BoxFuture, HandlerResult};
+  use wiremock::{Mock, MockServer, ResponseTemplate, matchers::*};
+  use serde_json::{json, Value};
+
+✓ Use #[tokio::test] for async tests (not #[test])
+
+✓ Create MockServer for any HTTP operations
+
+✓ Set up all required Mock expectations before running code
+
+✓ Mount mocks with .mount(&server).await
+
+✓ Use server.uri() for client/worker URLs
+
+✓ Call .expect(n) on mocks to verify call counts
+
+✓ Use .abort() or timeout for long-running operations
+
+✓ Verify assertions after async operations
+
+✓ Document expected behavior in comments
+
+═════════════════════════════════════════════════════════════════════════════════

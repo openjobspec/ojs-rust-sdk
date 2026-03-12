@@ -28,6 +28,8 @@ pub struct RetryConfig {
     pub max_backoff: Duration,
     /// Whether automatic retries are enabled (default: true).
     pub enabled: bool,
+    /// Whether to retry on 502, 503, 504 transient server errors (default: true).
+    pub retry_server_errors: bool,
 }
 
 impl Default for RetryConfig {
@@ -37,6 +39,7 @@ impl Default for RetryConfig {
             min_backoff: Duration::from_millis(500),
             max_backoff: Duration::from_secs(30),
             enabled: true,
+            retry_server_errors: true,
         }
     }
 }
