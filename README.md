@@ -216,7 +216,7 @@ Native OTel tracing and metrics (enable `otel-middleware` feature):
 
 ```toml
 [dependencies]
-ojs = { version = "0.2", features = ["otel-middleware"] }
+ojs = { version = "0.3", features = ["otel-middleware"] }
 ```
 
 ```rust
