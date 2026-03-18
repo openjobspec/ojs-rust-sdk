@@ -137,6 +137,8 @@ pub mod otel;
 #[cfg(feature = "serverless-lambda")]
 #[cfg_attr(docsrs, doc(cfg(feature = "serverless-lambda")))]
 pub mod serverless;
+pub mod agent;
+pub mod attest;
 
 // ---------------------------------------------------------------------------
 // Public re-exports

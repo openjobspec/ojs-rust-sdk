@@ -1,4 +1,5 @@
 # ojs - Open Job Spec SDK for Rust
+[![Stability: stable](https://img.shields.io/badge/stability-stable-brightgreen.svg)](https://github.com/openjobspec/openjobspec/blob/main/STABILITY.md)
 
 [![CI](https://github.com/openjobspec/ojs-rust-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/openjobspec/ojs-rust-sdk/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/ojs.svg)](https://crates.io/crates/ojs)
