@@ -195,13 +195,19 @@ pub struct RateLimitInfo {
 
 // ---------------------------------------------------------------------------
 // Wire format for parsing server error responses
+//
+// Only consumed by the reqwest-based `transport::http` module today; gated
+// the same way so a `--no-default-features` build (no reqwest transport)
+// does not carry never-constructed dead code.
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "reqwest-transport")]
 #[derive(Debug, Deserialize)]
 pub(crate) struct ErrorResponse {
     pub error: ServerErrorPayload,
 }
 
+#[cfg(feature = "reqwest-transport")]
 #[derive(Debug, Deserialize)]
 pub(crate) struct ServerErrorPayload {
     pub code: String,
@@ -214,6 +220,7 @@ pub(crate) struct ServerErrorPayload {
     pub request_id: Option<String>,
 }
 
+#[cfg(feature = "reqwest-transport")]
 impl ServerErrorPayload {
     pub fn into_server_error(self, http_status: u16) -> ServerError {
         ServerError {

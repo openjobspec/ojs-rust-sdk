@@ -84,11 +84,12 @@ impl RetryConfig {
 
     /// Compute the backoff delay for a given attempt, optionally using the
     /// server-provided `Retry-After` duration.
-    pub(crate) fn compute_backoff(
-        &self,
-        attempt: u32,
-        retry_after: Option<Duration>,
-    ) -> Duration {
+    ///
+    /// Only used by the built-in reqwest-based transport today; gated the
+    /// same way so a `--no-default-features` build does not carry an
+    /// unreachable crate-internal method.
+    #[cfg(feature = "reqwest-transport")]
+    pub(crate) fn compute_backoff(&self, attempt: u32, retry_after: Option<Duration>) -> Duration {
         if let Some(ra) = retry_after {
             // Respect the server's Retry-After, clamped to max_backoff.
             return ra.min(self.max_backoff);

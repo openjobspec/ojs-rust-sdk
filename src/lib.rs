@@ -111,6 +111,13 @@ pub mod worker;
 pub mod workflow;
 
 /// Server-Sent Events (SSE) subscription for real-time job events.
+///
+/// Requires the `reqwest-transport` feature (this module talks to the OJS
+/// server's SSE endpoint directly via `reqwest`, independent of the
+/// [`Transport`](crate::transport::Transport) abstraction used by [`Client`]
+/// and [`Worker`]).
+#[cfg(feature = "reqwest-transport")]
+#[cfg_attr(docsrs, doc(cfg(feature = "reqwest-transport")))]
 pub mod subscribe;
 
 /// Tracing middleware for structured job processing instrumentation.
@@ -133,12 +140,19 @@ pub mod middleware_common;
 #[cfg_attr(docsrs, doc(cfg(feature = "otel-middleware")))]
 pub mod otel;
 
+/// Agent API client for fork/merge branching, pause/resume human-in-the-loop
+/// control, and deterministic replay of agent job executions.
+///
+/// Requires the `reqwest-transport` feature (uses `reqwest` directly rather
+/// than the [`Transport`](crate::transport::Transport) abstraction).
+#[cfg(feature = "reqwest-transport")]
+#[cfg_attr(docsrs, doc(cfg(feature = "reqwest-transport")))]
+pub mod agent;
+pub mod attest;
 /// Serverless adapters for AWS Lambda and other FaaS platforms.
 #[cfg(feature = "serverless-lambda")]
 #[cfg_attr(docsrs, doc(cfg(feature = "serverless-lambda")))]
 pub mod serverless;
-pub mod agent;
-pub mod attest;
 
 // ---------------------------------------------------------------------------
 // Public re-exports

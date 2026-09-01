@@ -15,7 +15,9 @@
 use crate::errors::OjsError;
 use crate::job::{FetchRequest, FetchResponse, HeartbeatRequest, HeartbeatResponse, Job};
 use crate::middleware::{BoxFuture, HandlerFn, HandlerResult, Middleware, MiddlewareChain};
-use crate::transport::{self, DynTransport, HttpTransport};
+#[cfg(feature = "reqwest-transport")]
+use crate::transport::HttpTransport;
+use crate::transport::{self, DynTransport};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
 use std::sync::Arc;
@@ -52,6 +54,7 @@ pub struct WorkerBuilder {
     retry_config: Option<crate::rate_limiter::RetryConfig>,
     #[cfg(feature = "reqwest-transport")]
     http_client: Option<reqwest::Client>,
+    transport: Option<DynTransport>,
 }
 
 impl WorkerBuilder {
@@ -68,6 +71,7 @@ impl WorkerBuilder {
             headers: HashMap::new(),
             timeout: None,
             retry_config: None,
+            transport: None,
             #[cfg(feature = "reqwest-transport")]
             http_client: None,
         }
@@ -148,10 +152,23 @@ impl WorkerBuilder {
         self
     }
 
+    /// Use a custom [`Transport`](crate::transport::Transport) implementation
+    /// instead of the built-in reqwest-based HTTP transport.
+    ///
+    /// When set, `url()`, `auth_token()`, `header()`, `timeout()`, and
+    /// `http_client()` are ignored: a custom transport is responsible for
+    /// its own request construction, authentication, and headers. This is
+    /// also the only way to build a [`Worker`] when the `reqwest-transport`
+    /// feature is disabled.
+    pub fn transport(mut self, transport: DynTransport) -> Self {
+        self.transport = Some(transport);
+        self
+    }
+
     /// Set the retry configuration for rate-limited responses.
     ///
     /// By default, the worker retries up to 3 times on `429 Too Many Requests`
-    /// responses with exponential backoff. Use [`RetryConfig::disabled()`] to
+    /// responses with exponential backoff. Use [`RetryConfig::disabled()`](crate::rate_limiter::RetryConfig::disabled) to
     /// turn off automatic retries.
     pub fn retry_config(mut self, config: crate::rate_limiter::RetryConfig) -> Self {
         self.retry_config = Some(config);
@@ -160,26 +177,42 @@ impl WorkerBuilder {
 
     /// Build the worker.
     pub fn build(self) -> crate::Result<Worker> {
-        let url = self
-            .url
-            .ok_or_else(|| OjsError::Builder("url is required".into()))?;
+        let transport: DynTransport = match self.transport {
+            Some(t) => t,
+            None => {
+                let url = self
+                    .url
+                    .ok_or_else(|| OjsError::Builder("url is required".into()))?;
 
-        let transport = HttpTransport::new(
-            &url,
-            crate::transport::http::TransportConfig {
-                auth_token: self.auth_token,
-                headers: self.headers,
-                timeout: self.timeout,
-                retry_config: self.retry_config,
+                #[cfg(not(feature = "reqwest-transport"))]
+                {
+                    return Err(OjsError::Builder(format!(
+                        "Worker::builder().build() requires either a custom transport \
+                         via `.transport(...)` or the `reqwest-transport` feature \
+                         (attempted to connect to `{url}`)"
+                    )));
+                }
+
                 #[cfg(feature = "reqwest-transport")]
-                http_client: self.http_client,
-            },
-        );
+                {
+                    Arc::new(HttpTransport::new(
+                        &url,
+                        crate::transport::http::TransportConfig {
+                            auth_token: self.auth_token,
+                            headers: self.headers,
+                            timeout: self.timeout,
+                            retry_config: self.retry_config,
+                            http_client: self.http_client,
+                        },
+                    ))
+                }
+            }
+        };
 
         let worker_id = generate_worker_id();
 
         Ok(Worker {
-            transport: Arc::new(transport),
+            transport,
             worker_id,
             queues: self.queues,
             concurrency: self.concurrency,

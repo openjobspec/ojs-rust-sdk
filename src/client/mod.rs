@@ -5,10 +5,13 @@ use crate::queue::{
     Pagination, Queue, QueueStats, QueuesResponse,
 };
 use crate::schema::{RegisterSchemaRequest, Schema, SchemaDetail, SchemasResponse};
-use crate::transport::{self, DynTransport, HttpTransport};
+#[cfg(feature = "reqwest-transport")]
+use crate::transport::HttpTransport;
+use crate::transport::{self, DynTransport};
 use crate::workflow::{EnqueueOption, Workflow, WorkflowDefinition};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use std::collections::HashMap;
+#[cfg(feature = "reqwest-transport")]
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -34,6 +37,7 @@ pub struct ClientBuilder {
     retry_config: Option<crate::rate_limiter::RetryConfig>,
     #[cfg(feature = "reqwest-transport")]
     http_client: Option<reqwest::Client>,
+    transport: Option<DynTransport>,
 }
 
 impl ClientBuilder {
@@ -44,6 +48,7 @@ impl ClientBuilder {
             headers: HashMap::new(),
             timeout: None,
             retry_config: None,
+            transport: None,
             #[cfg(feature = "reqwest-transport")]
             http_client: None,
         }
@@ -94,10 +99,24 @@ impl ClientBuilder {
         self
     }
 
+    /// Use a custom [`Transport`](crate::transport::Transport) implementation
+    /// instead of the built-in reqwest-based HTTP transport.
+    ///
+    /// When set, `url()`, `auth_token()`, `header()`, `timeout()`, and
+    /// `http_client()` are ignored: a custom transport is responsible for
+    /// its own request construction, authentication, and headers. This is
+    /// also the only way to build a [`Client`] via [`ClientBuilder`] when the
+    /// `reqwest-transport` feature is disabled (equivalent to
+    /// [`Client::with_transport`]).
+    pub fn transport(mut self, transport: DynTransport) -> Self {
+        self.transport = Some(transport);
+        self
+    }
+
     /// Set the retry configuration for rate-limited responses.
     ///
     /// By default, the client retries up to 3 times on `429 Too Many Requests`
-    /// responses with exponential backoff. Use [`RetryConfig::disabled()`] to
+    /// responses with exponential backoff. Use [`RetryConfig::disabled()`](crate::rate_limiter::RetryConfig::disabled) to
     /// turn off automatic retries.
     pub fn retry_config(mut self, config: crate::rate_limiter::RetryConfig) -> Self {
         self.retry_config = Some(config);
@@ -106,25 +125,39 @@ impl ClientBuilder {
 
     /// Build the client.
     pub fn build(self) -> crate::Result<Client> {
-        let url = self
-            .url
-            .ok_or_else(|| OjsError::Builder("url is required".into()))?;
+        let transport: DynTransport = match self.transport {
+            Some(t) => t,
+            None => {
+                let url = self
+                    .url
+                    .ok_or_else(|| OjsError::Builder("url is required".into()))?;
 
-        let transport = HttpTransport::new(
-            &url,
-            crate::transport::http::TransportConfig {
-                auth_token: self.auth_token,
-                headers: self.headers,
-                timeout: self.timeout,
-                retry_config: self.retry_config,
+                #[cfg(not(feature = "reqwest-transport"))]
+                {
+                    return Err(OjsError::Builder(format!(
+                        "Client::builder().build() requires either a custom transport \
+                         via `.transport(...)` or the `reqwest-transport` feature \
+                         (attempted to connect to `{url}`)"
+                    )));
+                }
+
                 #[cfg(feature = "reqwest-transport")]
-                http_client: self.http_client,
-            },
-        );
+                {
+                    Arc::new(HttpTransport::new(
+                        &url,
+                        crate::transport::http::TransportConfig {
+                            auth_token: self.auth_token,
+                            headers: self.headers,
+                            timeout: self.timeout,
+                            retry_config: self.retry_config,
+                            http_client: self.http_client,
+                        },
+                    ))
+                }
+            }
+        };
 
-        Ok(Client {
-            transport: Arc::new(transport),
-        })
+        Ok(Client { transport })
     }
 }
 

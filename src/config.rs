@@ -11,6 +11,11 @@ use std::time::Duration;
 /// ```rust
 /// use ojs::ConnectionConfig;
 ///
+/// // `Client`/`Worker` construction from a shared `ConnectionConfig` requires
+/// // the `reqwest-transport` feature (on by default); this block is a no-op
+/// // under `--no-default-features` so the doctest still passes either way.
+/// # #[cfg(feature = "reqwest-transport")]
+/// # {
 /// let config = ConnectionConfig::new("http://localhost:8080")
 ///     .auth_token("my-token")
 ///     .header("X-Tenant-Id", "tenant-42")
@@ -26,6 +31,8 @@ use std::time::Duration;
 ///     .queues(vec!["default"])
 ///     .build()
 ///     .unwrap();
+/// # let _ = (client, worker);
+/// # }
 /// ```
 #[derive(Debug, Clone)]
 pub struct ConnectionConfig {
