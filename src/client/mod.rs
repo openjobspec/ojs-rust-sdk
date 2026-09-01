@@ -281,12 +281,16 @@ impl Client {
 
     /// Get job details by ID.
     pub async fn get_job(&self, id: &str) -> crate::Result<Job> {
-        transport::transport_get(&self.transport, &format!("/jobs/{}", id)).await
+        let resp: crate::job::JobResponseWire =
+            transport::transport_get(&self.transport, &format!("/jobs/{}", id)).await?;
+        Ok(resp.job)
     }
 
     /// Cancel a job by ID.
     pub async fn cancel_job(&self, id: &str) -> crate::Result<Job> {
-        transport::transport_delete(&self.transport, &format!("/jobs/{}", id)).await
+        let resp: crate::job::JobResponseWire =
+            transport::transport_delete(&self.transport, &format!("/jobs/{}", id)).await?;
+        Ok(resp.job)
     }
 
     // -----------------------------------------------------------------------
@@ -372,8 +376,10 @@ impl Client {
 
     /// Retry a dead letter job.
     pub async fn retry_dead_letter_job(&self, id: &str) -> crate::Result<Job> {
-        transport::transport_post_empty(&self.transport, &format!("/dead-letter/{}/retry", id))
-            .await
+        let resp: crate::job::JobResponseWire =
+            transport::transport_post_empty(&self.transport, &format!("/dead-letter/{}/retry", id))
+                .await?;
+        Ok(resp.job)
     }
 
     /// Discard a dead letter job permanently.
@@ -394,7 +400,9 @@ impl Client {
 
     /// Register a new cron job.
     pub async fn register_cron_job(&self, req: CronJobRequest) -> crate::Result<CronJob> {
-        transport::transport_post(&self.transport, "/cron", &req).await
+        let resp: crate::queue::CronJobResponse =
+            transport::transport_post(&self.transport, "/cron", &req).await?;
+        Ok(resp.cron_job)
     }
 
     /// Unregister a cron job by name.

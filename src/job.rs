@@ -385,6 +385,13 @@ pub(crate) struct EnqueueResponse {
     pub job: Job,
 }
 
+/// Wire envelope wrapping a single job (`{"job": {...}}`), as returned by
+/// `POST /jobs`, `GET /jobs/:id`, `DELETE /jobs/:id`, and
+/// `POST /dead-letter/:id/retry`. Structurally identical to
+/// [`EnqueueResponse`]; kept as a separate type alias so call sites read
+/// clearly at each endpoint.
+pub(crate) type JobResponseWire = EnqueueResponse;
+
 /// Request body for POST /ojs/v1/jobs/batch
 #[derive(Debug, Serialize)]
 pub(crate) struct BatchEnqueueRequest {
