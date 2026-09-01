@@ -259,6 +259,58 @@ mod tests {
         assert!(json.contains("ours"));
     }
 
+    #[tokio::test]
+    async fn test_auth_token_sent_as_bearer_header() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/agent/jobs/job-1/pause"))
+            .and(header("Authorization", "Bearer secret-token"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = AgentClient::new(&server.uri())
+            .unwrap()
+            .auth_token("secret-token");
+
+        client
+            .pause("job-1", "human review requested")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_no_auth_header_when_token_not_set() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/agent/jobs/job-1/pause"))
+            .respond_with(|req: &wiremock::Request| {
+                assert!(
+                    !req.headers.contains_key("authorization"),
+                    "no Authorization header should be sent when auth_token was never set"
+                );
+                ResponseTemplate::new(200)
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = AgentClient::new(&server.uri()).unwrap();
+        client
+            .pause("job-1", "human review requested")
+            .await
+            .unwrap();
+    }
+
     #[test]
     fn test_client_empty_url() {
         let result = AgentClient::new("");
