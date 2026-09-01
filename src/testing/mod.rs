@@ -26,7 +26,7 @@
 //! own submodule:
 //!
 //! - `fake_store` — the in-memory fake job store, its recorded-job model,
-//!   assertion/match-criteria helpers, and the drain loop
+//!   assertion/match-criteria helpers, and the reentrant-safe drain loop
 //!   ([`FakeStore`], [`FakeJob`], [`MatchCriteria`]).
 //! - `job_builder` — a standalone builder for constructing [`crate::Job`]
 //!   values directly in tests ([`JobBuilder`]), independent of any fake
