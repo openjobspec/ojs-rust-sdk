@@ -57,8 +57,9 @@ fn default_attempt() -> u32 {
 /// SQS event containing one or more messages.
 ///
 /// This mirrors the AWS SQS event structure. When using the
-/// `aws_lambda_events` crate, you can use its `SqsEvent` type directly
-/// and call [`LambdaHandler::handle_sqs_records`] with the records.
+/// `aws_lambda_events` crate, you can convert its `SqsEvent` type into this
+/// one and call [`LambdaHandler::handle_sqs`](crate::serverless::aws_lambda::LambdaHandler::handle_sqs)
+/// with it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SqsEvent {
     /// The SQS message records.
@@ -116,6 +117,9 @@ pub struct PushDeliveryRequest {
     pub worker_id: String,
 
     /// Unique delivery identifier for idempotency.
+    ///
+    /// Authenticated push delivery requires this to be non-empty; when the
+    /// transport forwards `X-OJS-Delivery-ID`, it must match this field.
     #[serde(default)]
     pub delivery_id: String,
 }

@@ -27,7 +27,11 @@ futures-util = "0.3"
 urlencoding = "2"
 opentelemetry = { version = "0.28", optional = true }
 lambda_runtime = { version = "0.13", optional = true }
-
+# Used only to authenticate serverless HTTP push delivery (HMAC-SHA256
+# request signatures); same RustCrypto family already used by the
+# `encryption` feature's `aes-gcm` dependency.
+hmac = { version = "0.12", optional = true }
+sha2 = { version = "0.10", optional = true }
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 wiremock = "0.6"
@@ -41,10 +45,13 @@ testing = []
 tracing-middleware = []
 common-middleware = []
 otel-middleware = ["dep:opentelemetry"]
-serverless-lambda = ["dep:lambda_runtime"]
+serverless-lambda = [
+    "dep:lambda_runtime",
+    "dep:hmac",
+    "dep:sha2",
+]
 encryption = ["dep:aes-gcm", "dep:base64"]
 
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
-
