@@ -56,6 +56,7 @@ impl JobBuilder {
                 result: None,
                 tags: vec![],
                 timeout_ms: None,
+                checkpoint: None,
             },
         }
     }

@@ -387,6 +387,7 @@ mod tests {
             result: None,
             tags: vec![],
             timeout_ms: None,
+            checkpoint: None,
         }
     }
 

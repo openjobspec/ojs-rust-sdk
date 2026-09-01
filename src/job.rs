@@ -282,6 +282,15 @@ pub struct Job {
     /// Timeout in milliseconds (wire format).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+
+    /// The job's last saved durable-execution checkpoint state, if any.
+    ///
+    /// Per `ojs-durable-execution.md` §6.1, the backend MUST include the
+    /// last checkpoint state in the job envelope when a job is re-fetched
+    /// after a crash or visibility-timeout expiration. Absent on the first
+    /// attempt (no prior checkpoint). See [`crate::worker::JobContext::checkpoint`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<serde_json::Value>,
 }
 
 impl Job {
@@ -503,6 +512,7 @@ mod tests {
             result: None,
             tags: vec![],
             timeout_ms: None,
+            checkpoint: None,
         };
 
         let to: String = job.arg("to").unwrap();
