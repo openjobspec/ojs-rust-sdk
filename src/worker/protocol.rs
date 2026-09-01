@@ -84,9 +84,24 @@ pub(crate) async fn process_job(
         Err(e) => {
             tracing::warn!(job_id = %job_id, error = %e, "job failed");
             let (code, message, retryable) = match &e {
-                OjsError::NonRetryable(msg) => ("handler_error".to_string(), msg.clone(), false),
-                OjsError::Handler(msg) => ("handler_error".to_string(), msg.clone(), true),
-                other => ("handler_error".to_string(), other.to_string(), true),
+                OjsError::NonRetryable(msg) => (
+                    crate::errors::ERR_HANDLER_ERROR.to_string(),
+                    msg.clone(),
+                    false,
+                ),
+                OjsError::Timeout(msg) => {
+                    (crate::errors::ERR_TIMEOUT.to_string(), msg.clone(), true)
+                }
+                OjsError::Handler(msg) => (
+                    crate::errors::ERR_HANDLER_ERROR.to_string(),
+                    msg.clone(),
+                    true,
+                ),
+                other => (
+                    crate::errors::ERR_HANDLER_ERROR.to_string(),
+                    other.to_string(),
+                    true,
+                ),
             };
             nack_job(transport, &job_id, &code, &message, retryable).await?;
         }

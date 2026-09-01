@@ -43,7 +43,7 @@ impl Middleware for TimeoutMiddleware {
         Box::pin(async move {
             match tokio::time::timeout(duration, next.run(ctx)).await {
                 Ok(result) => result,
-                Err(_elapsed) => Err(OjsError::Handler(format!(
+                Err(_elapsed) => Err(OjsError::Timeout(format!(
                     "Job {} (id={}) timed out after {}ms",
                     job_type,
                     job_id,

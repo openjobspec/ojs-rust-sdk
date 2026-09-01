@@ -43,6 +43,14 @@ pub enum OjsError {
     #[error("handler error: {0}")]
     Handler(String),
 
+    /// The handler exceeded its configured execution timeout (e.g. via the
+    /// `common-middleware` feature's `TimeoutMiddleware`). Reported to the
+    /// server as the canonical `"timeout"` NACK code
+    /// ([`crate::errors::ERR_TIMEOUT`]) rather than the generic
+    /// `"handler_error"` code, and is retryable.
+    #[error("handler timeout: {0}")]
+    Timeout(String),
+
     /// The handler returned a non-retryable error. The job will not be retried.
     #[error("non-retryable error: {0}")]
     NonRetryable(String),
