@@ -369,3 +369,154 @@ pub(crate) fn unix_timestamp_now() -> Duration {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    const TEST_SECRET: &[u8] = b"0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn test_oversized_timestamp_header_rejected() {
+        let long_timestamp = "1".repeat(MAX_PUSH_TIMESTAMP_HEADER_BYTES + 1);
+        let err = parse_push_timestamp(&long_timestamp).unwrap_err();
+        assert!(matches!(err, ServerlessError::NonRetryable(_)));
+    }
+
+    #[test]
+    fn test_non_digit_timestamp_rejected() {
+        let err = parse_push_timestamp("not-a-number").unwrap_err();
+        assert!(matches!(err, ServerlessError::NonRetryable(_)));
+    }
+
+    #[test]
+    fn test_malformed_signature_missing_prefix_rejected() {
+        let err = parse_push_signatures(&["deadbeef"]).unwrap_err();
+        assert!(matches!(err, ServerlessError::NonRetryable(_)));
+    }
+
+    #[test]
+    fn test_oversized_signature_header_rejected() {
+        let huge = "sha256=".to_string() + &"a".repeat(MAX_PUSH_SIGNATURE_HEADER_BYTES);
+        let err = parse_push_signatures(&[&huge]).unwrap_err();
+        assert!(matches!(err, ServerlessError::NonRetryable(_)));
+    }
+
+    #[test]
+    fn test_multiple_comma_separated_signatures_all_parsed() {
+        let sig_a = "sha256=".to_string() + &"a".repeat(64);
+        let sig_b = "sha256=".to_string() + &"b".repeat(64);
+        let combined = format!("{sig_a}, {sig_b}");
+        let parsed = parse_push_signatures(&[&combined]).unwrap();
+        assert_eq!(parsed.len(), 2);
+    }
+
+    #[test]
+    fn test_replay_ttl_covers_future_timestamp_full_validity() {
+        let secret = TEST_SECRET;
+        let config = PushAuthConfig::new()
+            .with_signing_secret(secret.to_vec())
+            .with_freshness_window(Duration::from_secs(300));
+        let now = Duration::from_secs(1_000);
+        let timestamp = "1240";
+        let body = br#"{"delivery_id":"future-skewed"}"#;
+
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret).unwrap();
+        mac.update(timestamp.as_bytes());
+        mac.update(b".");
+        mac.update(body);
+        let signature_hex = mac.finalize().into_bytes().iter().fold(
+            String::with_capacity(64),
+            |mut output, byte| {
+                use std::fmt::Write;
+                let _ = write!(output, "{byte:02x}");
+                output
+            },
+        );
+        let signature = format!("sha256={signature_hex}");
+
+        let replay_ttl =
+            authenticate_push(&config, Some(timestamp), &[&signature], body, now).unwrap();
+
+        // The signature remains valid through second 1540 inclusive:
+        // timestamp 1240 + 300s window, relative to now=1000.
+        assert_eq!(replay_ttl, Duration::from_secs(541));
+    }
+
+    #[test]
+    fn test_debug_never_leaks_signing_secret_bytes() {
+        let secret = b"THIS-IS-A-32-BYTE-SIGNING-SECRET".to_vec();
+        assert_eq!(secret.len(), MIN_PUSH_SIGNING_SECRET_BYTES);
+        let config = PushAuthConfig::new()
+            .with_signing_secret(secret.clone())
+            .with_signing_secret(b"SECOND-32-BYTE-ROTATION-SECRET!!".to_vec());
+        let dbg = format!("{config:?}");
+        // Raw secret bytes / ASCII must never appear.
+        assert!(
+            !dbg.contains("THIS-IS-A-32-BYTE-SIGNING-SECRET"),
+            "Debug leaked signing secret: {dbg}"
+        );
+        assert!(!dbg.contains("SECOND-32-BYTE-ROTATION-SECRET"));
+        // Useful count metadata and safe fields must be present.
+        assert!(dbg.contains("PushAuthConfig"));
+        assert!(
+            dbg.contains("signing_secret_count") && dbg.contains('2'),
+            "expected secret count metadata: {dbg}"
+        );
+        assert!(dbg.contains("freshness_window"));
+        assert!(dbg.contains("allow_insecure_unsigned"));
+    }
+
+    #[test]
+    fn test_try_with_signing_secret_rejects_empty_and_short_values() {
+        for secret in [Vec::new(), vec![b'x'; MIN_PUSH_SIGNING_SECRET_BYTES - 1]] {
+            let err = PushAuthConfig::new()
+                .try_with_signing_secret(secret)
+                .unwrap_err();
+            assert!(err.to_string().contains("at least 32 bytes"));
+        }
+    }
+
+    #[test]
+    fn test_missing_signing_secret_environment_variable_is_rejected() {
+        const VARIABLE: &str = "OJS_TEST_PUSH_SECRET_MUST_NOT_EXIST_7C8F0A91";
+        std::env::remove_var(VARIABLE);
+
+        let err = PushAuthConfig::new()
+            .try_with_signing_secret_from_env(VARIABLE)
+            .unwrap_err();
+
+        assert!(err.to_string().contains(VARIABLE));
+        assert!(err.to_string().contains("not set"));
+    }
+
+    #[test]
+    fn test_mixed_valid_and_short_rotation_list_fails_verification() {
+        let config = PushAuthConfig::new()
+            .with_signing_secret(TEST_SECRET.to_vec())
+            .with_signing_secret(b"short".to_vec());
+        let now = Duration::from_secs(1_000);
+        let timestamp = "1000";
+        let body = br#"{"delivery_id":"mixed-rotation"}"#;
+
+        let mut mac = Hmac::<Sha256>::new_from_slice(TEST_SECRET).unwrap();
+        mac.update(timestamp.as_bytes());
+        mac.update(b".");
+        mac.update(body);
+        let signature_hex = mac.finalize().into_bytes().iter().fold(
+            String::with_capacity(64),
+            |mut output, byte| {
+                use std::fmt::Write;
+                let _ = write!(output, "{byte:02x}");
+                output
+            },
+        );
+        let signature = format!("sha256={signature_hex}");
+
+        let err =
+            authenticate_push(&config, Some(timestamp), &[&signature], body, now).unwrap_err();
+        assert!(err.to_string().contains("at least 32 bytes"));
+    }
+}

@@ -1100,4 +1100,749 @@ mod tests {
         let resp = handler.handle_direct(job).await;
         assert_eq!(resp.status, "completed");
     }
+
+    #[tokio::test]
+    async fn test_register_with_context_exposes_push_delivery_identity() {
+        let mut handler = LambdaHandler::with_ojs_url("https://ojs.example.com");
+        handler.register_with_context("email.send", |ctx: PushContext| async move {
+            assert_eq!(ctx.ojs_url(), Some("https://ojs.example.com"));
+            assert_eq!(ctx.job().id, "job-1");
+            assert_eq!(ctx.job().job_type, "email.send");
+            assert_eq!(ctx.worker_id(), Some("w1"));
+            assert_eq!(ctx.delivery_id(), Some("d1"));
+            Ok(())
+        });
+
+        let resp = handler
+            .handle_http(PushDeliveryRequest {
+                job: make_job_event("job-1", "email.send"),
+                worker_id: "w1".to_string(),
+                delivery_id: "d1".to_string(),
+            })
+            .await;
+
+        assert_eq!(resp.status, "completed");
+        assert!(resp.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_register_while_processing_does_not_panic_or_deadlock() {
+        // Regression test for the `tokio::task::block_in_place` fallback
+        // that `register()` used to fall back to when a synchronous
+        // `try_write` lost a race against an in-flight `process_job` read
+        // lock: `block_in_place` panics outright on the current-thread
+        // runtime this test intentionally uses. `std::sync::RwLock` has no
+        // such fallback to reach at all.
+        let mut handler = LambdaHandler::new();
+        handler.register("first", |_ctx, _job: JobEvent| async move {
+            // Register a second handler *while* this one is "processing",
+            // simulating registration racing a concurrent dispatch.
+            Ok(())
+        });
+
+        let job = make_job_event("j1", "first");
+        let resp = handler.handle_direct(job).await;
+        assert_eq!(resp.status, "completed");
+
+        // Registering after the fact must still succeed without panicking.
+        handler.register("second", |_ctx, _job: JobEvent| async move { Ok(()) });
+        let job2 = make_job_event("j2", "second");
+        let resp2 = handler.handle_direct(job2).await;
+        assert_eq!(resp2.status, "completed");
+    }
+
+    #[test]
+    fn test_register_is_synchronous_and_current_thread_runtime_safe() {
+        // `register()` must work from a plain synchronous context (no
+        // Tokio runtime at all), proving it never reaches for
+        // `tokio::task::block_in_place` (which requires an active runtime
+        // and panics on a current-thread one).
+        let mut handler = LambdaHandler::new();
+        handler.register(
+            "sync.registered",
+            |_ctx, _job: JobEvent| async move { Ok(()) },
+        );
+
+        // Building a current-thread runtime specifically exercises the
+        // scenario where the old `block_in_place` fallback would panic.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let job = make_job_event("j1", "sync.registered");
+            let resp = handler.handle_direct(job).await;
+            assert_eq!(resp.status, "completed");
+        });
+    }
+}
+
+// Tests for the authenticated push-delivery entry points
+// (`handle_http_authenticated`/`handle_http_raw_authenticated`), exercising
+// the integration of `push_auth`'s verification with `LambdaHandler`'s
+// dispatch. Pure unit tests for the parsing/verification primitives
+// themselves (with no `LambdaHandler` involved) live in `push_auth`'s own
+// test module.
+#[cfg(test)]
+mod push_auth_integration_tests {
+    use super::*;
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+    use tokio::sync::Barrier;
+
+    const TEST_SECRET: &[u8] = b"0123456789abcdef0123456789abcdef";
+    const OLD_SECRET: &[u8] = b"old-0123456789abcdef0123456789ab";
+    const NEW_SECRET: &[u8] = b"new-0123456789abcdef0123456789ab";
+    const WRONG_SECRET: &[u8] = b"bad-0123456789abcdef0123456789ab";
+
+    fn authenticated_handler(config: PushAuthConfig) -> LambdaHandler {
+        LambdaHandler::new()
+            .with_delivery_id_store(Arc::new(InMemoryDeliveryIdStore::new(128)))
+            .with_push_auth(config)
+    }
+
+    #[derive(Debug, Default)]
+    struct RecordingDeliveryIdStore {
+        calls: AtomicUsize,
+        ids: Mutex<Vec<String>>,
+    }
+
+    impl DeliveryIdStore for RecordingDeliveryIdStore {
+        fn check_and_insert<'a>(
+            &'a self,
+            delivery_id: &'a str,
+            _ttl: Duration,
+        ) -> Pin<Box<dyn Future<Output = Result<DeliveryIdCheck, ServerlessError>> + Send + 'a>>
+        {
+            Box::pin(async move {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                self.ids
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(delivery_id.to_string());
+                Ok(DeliveryIdCheck::Inserted)
+            })
+        }
+    }
+
+    fn sign(secret: &[u8], timestamp: &str, body: &[u8]) -> String {
+        let mut message = Vec::new();
+        message.extend_from_slice(timestamp.as_bytes());
+        message.push(b'.');
+        message.extend_from_slice(body);
+
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret).unwrap();
+        mac.update(&message);
+        let bytes = mac.finalize().into_bytes();
+        let hex = bytes.iter().fold(String::with_capacity(64), |mut out, b| {
+            use std::fmt::Write;
+            let _ = write!(out, "{b:02x}");
+            out
+        });
+        format!("sha256={hex}")
+    }
+
+    fn headers_with(timestamp: &str, signature: &str) -> HashMap<String, String> {
+        let mut headers = HashMap::new();
+        headers.insert(PUSH_TIMESTAMP_HEADER.to_string(), timestamp.to_string());
+        headers.insert(PUSH_SIGNATURE_HEADER.to_string(), signature.to_string());
+        headers
+    }
+
+    fn make_request_body(job_type: &str) -> Vec<u8> {
+        make_request_body_with(job_type, "job-1", "w1", "d1")
+    }
+
+    fn make_request_body_with(
+        job_type: &str,
+        job_id: &str,
+        worker_id: &str,
+        delivery_id: &str,
+    ) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "job": {
+                "id": job_id,
+                "type": job_type,
+                "queue": "default",
+                "args": [],
+                "attempt": 1
+            },
+            "worker_id": worker_id,
+            "delivery_id": delivery_id
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn test_try_with_push_auth_rejects_invalid_legacy_config_at_initialization() {
+        let config = PushAuthConfig::new()
+            .with_signing_secret(TEST_SECRET.to_vec())
+            .with_signing_secret(Vec::new());
+
+        let err = LambdaHandler::new()
+            .try_with_push_auth(config)
+            .err()
+            .expect("mixed-invalid rotation config must fail");
+
+        assert!(err.to_string().contains("at least 32 bytes"));
+    }
+
+    #[tokio::test]
+    async fn test_default_store_is_shared_across_lambda_handler_instances() {
+        let delivery_id = format!("shared-{}", uuid::Uuid::new_v4());
+        let body = make_request_body_with("email.send", "job-shared", "w1", &delivery_id);
+        let timestamp = push_auth::unix_timestamp_now().as_secs().to_string();
+        let signature = sign(TEST_SECRET, &timestamp, &body);
+        let headers = headers_with(&timestamp, &signature);
+        let config = PushAuthConfig::new().with_signing_secret(TEST_SECRET.to_vec());
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let mut first = LambdaHandler::new().with_push_auth(config.clone());
+        first.register("email.send", {
+            let calls = calls.clone();
+            move |_ctx, _job: JobEvent| {
+                let calls = calls.clone();
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }
+            }
+        });
+        let mut second = LambdaHandler::new().with_push_auth(config);
+        second.register("email.send", {
+            let calls = calls.clone();
+            move |_ctx, _job: JobEvent| {
+                let calls = calls.clone();
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }
+            }
+        });
+
+        first
+            .handle_http_authenticated(&headers, &body)
+            .await
+            .unwrap();
+        let err = second
+            .handle_http_authenticated(&headers, &body)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, ServerlessError::NonRetryable(_)));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_store_capacity_fails_closed_without_evicting_live_id() {
+        let store = Arc::new(InMemoryDeliveryIdStore::new(1));
+        let mut handler = LambdaHandler::new()
+            .with_delivery_id_store(store.clone())
+            .with_push_auth(PushAuthConfig::new().with_signing_secret(TEST_SECRET.to_vec()));
+        handler.register("email.send", |_ctx, _job: JobEvent| async move { Ok(()) });
+
+        let timestamp = push_auth::unix_timestamp_now().as_secs().to_string();
+        let first_body = make_request_body_with("email.send", "job-1", "w1", "capacity-live");
+        let first_signature = sign(TEST_SECRET, &timestamp, &first_body);
+        handler
+            .handle_http_authenticated(&headers_with(&timestamp, &first_signature), &first_body)
+            .await
+            .unwrap();
+
+        let second_body = make_request_body_with("email.send", "job-2", "w1", "capacity-new");
+        let second_signature = sign(TEST_SECRET, &timestamp, &second_body);
+        let err = handler
+            .handle_http_authenticated(&headers_with(&timestamp, &second_signature), &second_body)
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, ServerlessError::Handler(_)),
+            "capacity exhaustion must be retryable"
+        );
+        assert_eq!(
+            store
+                .check_and_insert("capacity-live", Duration::from_secs(1))
+                .await
+                .unwrap(),
+            DeliveryIdCheck::Duplicate,
+            "the unexpired first ID must not be evicted to admit a new one"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_store_allows_id_after_expiry() {
+        let store = InMemoryDeliveryIdStore::new(1);
+
+        assert_eq!(
+            store
+                .check_and_insert("expiring-id", Duration::from_millis(20))
+                .await
+                .unwrap(),
+            DeliveryIdCheck::Inserted
+        );
+        assert_eq!(
+            store
+                .check_and_insert("expiring-id", Duration::from_millis(20))
+                .await
+                .unwrap(),
+            DeliveryIdCheck::Duplicate
+        );
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(
+            store
+                .check_and_insert("expiring-id", Duration::from_millis(20))
+                .await
+                .unwrap(),
+            DeliveryIdCheck::Inserted
+        );
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_store_check_and_insert_is_atomic_concurrently() {
+        let store = Arc::new(InMemoryDeliveryIdStore::new(64));
+        let barrier = Arc::new(Barrier::new(33));
+        let mut handles = Vec::new();
+
+        for _ in 0..32 {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            handles.push(tokio::spawn(async move {
+                barrier.wait().await;
+                store
+                    .check_and_insert("concurrent-id", Duration::from_secs(1))
+                    .await
+                    .unwrap()
+            }));
+        }
+        barrier.wait().await;
+
+        let mut inserted = 0;
+        let mut duplicates = 0;
+        for handle in handles {
+            match handle.await.unwrap() {
+                DeliveryIdCheck::Inserted => inserted += 1,
+                DeliveryIdCheck::Duplicate => duplicates += 1,
+            }
+        }
+
+        assert_eq!(inserted, 1);
+        assert_eq!(duplicates, 31);
+    }
+
+    #[tokio::test]
+    async fn test_custom_delivery_id_store_is_used() {
+        let store = Arc::new(RecordingDeliveryIdStore::default());
+        let mut handler = LambdaHandler::new()
+            .with_delivery_id_store(store.clone())
+            .with_push_auth(PushAuthConfig::new().with_signing_secret(TEST_SECRET.to_vec()));
+        handler.register("email.send", |_ctx, _job: JobEvent| async move { Ok(()) });
+
+        let body =
+            make_request_body_with("email.send", "job-custom", "w1", "custom-store-delivery");
+        let timestamp = push_auth::unix_timestamp_now().as_secs().to_string();
+        let signature = sign(TEST_SECRET, &timestamp, &body);
+
+        handler
+            .handle_http_authenticated(&headers_with(&timestamp, &signature), &body)
+            .await
+            .unwrap();
+
+        assert_eq!(store.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            store
+                .ids
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_slice(),
+            ["custom-store-delivery"]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_valid_signature_dispatches_to_handler() {
+        let secret = TEST_SECRET;
+        let mut handler =
+            authenticated_handler(PushAuthConfig::new().with_signing_secret(secret.to_vec()));
+        handler.register("email.send", |_ctx, _job: JobEvent| async move { Ok(()) });
+
+        let body = make_request_body("email.send");
+        let now = push_auth::unix_timestamp_now().as_secs();
+        let timestamp = now.to_string();
+        let signature = sign(secret, &timestamp, &body);
+        let headers = headers_with(&timestamp, &signature);
+
+        let resp = handler
+            .handle_http_authenticated(&headers, &body)
+            .await
+            .unwrap();
+        assert_eq!(resp.status, "completed");
+    }
+
+    #[tokio::test]
+    async fn test_missing_delivery_id_is_rejected_for_authenticated_push() {
+        let secret = TEST_SECRET;
+        let handler =
+            authenticated_handler(PushAuthConfig::new().with_signing_secret(secret.to_vec()));
+
+        let body = make_request_body_with("email.send", "job-1", "w1", "");
+        let timestamp = push_auth::unix_timestamp_now().as_secs().to_string();
+        let signature = sign(secret, &timestamp, &body);
+        let headers = headers_with(&timestamp, &signature);
+
+        let err = handler
+            .handle_http_authenticated(&headers, &body)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ServerlessError::NonRetryable(_)));
+    }
+
+    #[tokio::test]
+    async fn test_delivery_and_job_headers_must_match_authenticated_body() {
+        let secret = TEST_SECRET;
+        let handler =
+            authenticated_handler(PushAuthConfig::new().with_signing_secret(secret.to_vec()));
+
+        let body = make_request_body("email.send");
+        let timestamp = push_auth::unix_timestamp_now().as_secs().to_string();
+        let signature = sign(secret, &timestamp, &body);
+
+        let mut bad_delivery_headers = headers_with(&timestamp, &signature);
+        bad_delivery_headers.insert(
+            PUSH_DELIVERY_ID_HEADER.to_string(),
+            "different-delivery".to_string(),
+        );
+        let err = handler
+            .handle_http_authenticated(&bad_delivery_headers, &body)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ServerlessError::NonRetryable(_)));
+
+        let mut bad_job_headers = headers_with(&timestamp, &signature);
+        bad_job_headers.insert(PUSH_JOB_ID_HEADER.to_string(), "different-job".to_string());
+        let err = handler
+            .handle_http_authenticated(&bad_job_headers, &body)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ServerlessError::NonRetryable(_)));
+    }
+
+    #[tokio::test]
+    async fn test_signed_replay_is_rejected_within_freshness_window() {
+        let secret = TEST_SECRET;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut handler =
+            authenticated_handler(PushAuthConfig::new().with_signing_secret(secret.to_vec()));
+        handler.register("email.send", {
+            let calls = calls.clone();
+            move |_ctx, _job: JobEvent| {
+                let calls = calls.clone();
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }
+            }
+        });
+
+        let body = make_request_body("email.send");
+        let timestamp = push_auth::unix_timestamp_now().as_secs().to_string();
+        let signature = sign(secret, &timestamp, &body);
+        let headers = headers_with(&timestamp, &signature);
+
+        let resp = handler
+            .handle_http_authenticated(&headers, &body)
+            .await
+            .unwrap();
+        assert_eq!(resp.status, "completed");
+
+        let err = handler
+            .handle_http_authenticated(&headers, &body)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ServerlessError::NonRetryable(_)));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_missing_timestamp_header_rejected_without_dispatch() {
+        let secret = TEST_SECRET;
+        let handler =
+            authenticated_handler(PushAuthConfig::new().with_signing_secret(secret.to_vec()));
+
+        let body = make_request_body("email.send");
+        let mut headers = HashMap::new();
+        headers.insert(
+            PUSH_SIGNATURE_HEADER.to_string(),
+            "sha256=deadbeef".to_string(),
+        );
+
+        let err = handler
+            .handle_http_authenticated(&headers, &body)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ServerlessError::NonRetryable(_)));
+    }
+
+    #[tokio::test]
+    async fn test_missing_signature_header_rejected() {
+        let secret = TEST_SECRET;
+        let handler =
+            authenticated_handler(PushAuthConfig::new().with_signing_secret(secret.to_vec()));
+
+        let body = make_request_body("email.send");
+        let mut headers = HashMap::new();
+        headers.insert(
+            PUSH_TIMESTAMP_HEADER.to_string(),
+            push_auth::unix_timestamp_now().as_secs().to_string(),
+        );
+
+        let err = handler
+            .handle_http_authenticated(&headers, &body)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ServerlessError::NonRetryable(_)));
+    }
+
+    #[tokio::test]
+    async fn test_stale_timestamp_rejected() {
+        let secret = TEST_SECRET;
+        let handler = authenticated_handler(
+            PushAuthConfig::new()
+                .with_signing_secret(secret.to_vec())
+                .with_freshness_window(Duration::from_secs(60)),
+        );
+
+        let body = make_request_body("email.send");
+        // 1 hour old: well outside the 60s freshness window.
+        let stale_timestamp = (push_auth::unix_timestamp_now().as_secs() - 3600).to_string();
+        let signature = sign(secret, &stale_timestamp, &body);
+        let headers = headers_with(&stale_timestamp, &signature);
+
+        let err = handler
+            .handle_http_authenticated(&headers, &body)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ServerlessError::NonRetryable(_)));
+    }
+
+    #[tokio::test]
+    async fn test_wrong_signature_rejected() {
+        let secret = TEST_SECRET;
+        let handler =
+            authenticated_handler(PushAuthConfig::new().with_signing_secret(secret.to_vec()));
+
+        let body = make_request_body("email.send");
+        let timestamp = push_auth::unix_timestamp_now().as_secs().to_string();
+        // Signed with a *different* secret than the one configured.
+        let wrong_signature = sign(WRONG_SECRET, &timestamp, &body);
+        let headers = headers_with(&timestamp, &wrong_signature);
+
+        let err = handler
+            .handle_http_authenticated(&headers, &body)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ServerlessError::NonRetryable(_)));
+    }
+
+    #[tokio::test]
+    async fn test_tampered_body_rejected() {
+        let secret = TEST_SECRET;
+        let mut handler =
+            authenticated_handler(PushAuthConfig::new().with_signing_secret(secret.to_vec()));
+        handler.register("email.send", |_ctx, _job: JobEvent| async move { Ok(()) });
+
+        let original_body = make_request_body("email.send");
+        let timestamp = push_auth::unix_timestamp_now().as_secs().to_string();
+        // Sign the ORIGINAL body...
+        let signature = sign(secret, &timestamp, &original_body);
+        let headers = headers_with(&timestamp, &signature);
+
+        // ...but present a *different* body with that stale signature,
+        // simulating a tampered-in-transit or replayed-with-edits request.
+        let tampered_body = make_request_body("payment.charge");
+
+        let err = handler
+            .handle_http_authenticated(&headers, &tampered_body)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ServerlessError::NonRetryable(_)));
+    }
+
+    #[tokio::test]
+    async fn test_secret_rotation_accepts_either_secret() {
+        let old_secret = OLD_SECRET;
+        let new_secret = NEW_SECRET;
+        let mut handler = authenticated_handler(
+            PushAuthConfig::new()
+                .with_signing_secret(old_secret.to_vec())
+                .with_signing_secret(new_secret.to_vec()),
+        );
+        handler.register("email.send", |_ctx, _job: JobEvent| async move { Ok(()) });
+
+        let first_body = make_request_body_with("email.send", "job-1", "w1", "d1");
+        let second_body = make_request_body_with("email.send", "job-1", "w1", "d2");
+        let timestamp = push_auth::unix_timestamp_now().as_secs().to_string();
+
+        // A request signed with the *old* secret still verifies.
+        let old_signature = sign(old_secret, &timestamp, &first_body);
+        let headers = headers_with(&timestamp, &old_signature);
+        let resp = handler
+            .handle_http_authenticated(&headers, &first_body)
+            .await
+            .unwrap();
+        assert_eq!(resp.status, "completed");
+
+        // A distinct delivery signed with the *new* secret also verifies.
+        let new_signature = sign(new_secret, &timestamp, &second_body);
+        let headers2 = headers_with(&timestamp, &new_signature);
+        let resp2 = handler
+            .handle_http_authenticated(&headers2, &second_body)
+            .await
+            .unwrap();
+        assert_eq!(resp2.status, "completed");
+    }
+
+    #[tokio::test]
+    async fn test_secret_rotation_does_not_bypass_delivery_replay_cache() {
+        let old_secret = OLD_SECRET;
+        let new_secret = NEW_SECRET;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut handler = authenticated_handler(
+            PushAuthConfig::new()
+                .with_signing_secret(old_secret.to_vec())
+                .with_signing_secret(new_secret.to_vec()),
+        );
+        handler.register("email.send", {
+            let calls = calls.clone();
+            move |_ctx, _job: JobEvent| {
+                let calls = calls.clone();
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }
+            }
+        });
+
+        let first_body = make_request_body_with("email.send", "job-1", "w1", "shared-delivery");
+        let second_body = make_request_body_with("email.send", "job-1", "w1", "fresh-delivery");
+        let timestamp = push_auth::unix_timestamp_now().as_secs().to_string();
+
+        let old_signature = sign(old_secret, &timestamp, &first_body);
+        let resp = handler
+            .handle_http_authenticated(&headers_with(&timestamp, &old_signature), &first_body)
+            .await
+            .unwrap();
+        assert_eq!(resp.status, "completed");
+
+        let replay_signature = sign(new_secret, &timestamp, &first_body);
+        let err = handler
+            .handle_http_authenticated(&headers_with(&timestamp, &replay_signature), &first_body)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ServerlessError::NonRetryable(_)));
+
+        let fresh_signature = sign(new_secret, &timestamp, &second_body);
+        let resp = handler
+            .handle_http_authenticated(&headers_with(&timestamp, &fresh_signature), &second_body)
+            .await
+            .unwrap();
+        assert_eq!(resp.status, "completed");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_insecure_unsigned_bypasses_verification() {
+        let mut handler = authenticated_handler(
+            PushAuthConfig::new().allow_insecure_unsigned_for_local_development(),
+        );
+        handler.register("email.send", |_ctx, _job: JobEvent| async move { Ok(()) });
+
+        let body = make_request_body("email.send");
+        // No timestamp/signature headers at all.
+        let headers = HashMap::new();
+
+        let resp = handler
+            .handle_http_authenticated(&headers, &body)
+            .await
+            .unwrap();
+        assert_eq!(resp.status, "completed");
+    }
+
+    #[tokio::test]
+    async fn test_no_push_auth_configured_fails_closed() {
+        // A handler with NO `.with_push_auth(...)` call at all must refuse
+        // to use the authenticated entry point rather than silently
+        // accepting unsigned requests.
+        let handler = LambdaHandler::new();
+        let body = make_request_body("email.send");
+        let headers = HashMap::new();
+
+        let err = handler
+            .handle_http_authenticated(&headers, &body)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ServerlessError::NonRetryable(_)));
+    }
+
+    #[tokio::test]
+    async fn test_no_secrets_configured_fails_closed() {
+        // `PushAuthConfig::new()` with no secrets and no explicit insecure
+        // opt-in must also fail closed.
+        let handler = authenticated_handler(PushAuthConfig::new());
+        let body = make_request_body("email.send");
+        let timestamp = push_auth::unix_timestamp_now().as_secs().to_string();
+        let signature = sign(TEST_SECRET, &timestamp, &body);
+        let headers = headers_with(&timestamp, &signature);
+
+        let err = handler
+            .handle_http_authenticated(&headers, &body)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ServerlessError::NonRetryable(_)));
+    }
+
+    #[tokio::test]
+    async fn test_header_lookup_is_case_insensitive() {
+        let secret = TEST_SECRET;
+        let mut handler =
+            authenticated_handler(PushAuthConfig::new().with_signing_secret(secret.to_vec()));
+        handler.register("email.send", |_ctx, _job: JobEvent| async move { Ok(()) });
+
+        let body = make_request_body("email.send");
+        let timestamp = push_auth::unix_timestamp_now().as_secs().to_string();
+        let signature = sign(secret, &timestamp, &body);
+
+        let mut headers = HashMap::new();
+        headers.insert("x-ojs-timestamp".to_string(), timestamp);
+        headers.insert("x-ojs-signature".to_string(), signature);
+
+        let resp = handler
+            .handle_http_authenticated(&headers, &body)
+            .await
+            .unwrap();
+        assert_eq!(resp.status, "completed");
+    }
+
+    #[tokio::test]
+    async fn test_raw_string_authenticated_wrapper_matches_bytes_version() {
+        let secret = TEST_SECRET;
+        let mut handler =
+            authenticated_handler(PushAuthConfig::new().with_signing_secret(secret.to_vec()));
+        handler.register("email.send", |_ctx, _job: JobEvent| async move { Ok(()) });
+
+        let body = make_request_body("email.send");
+        let body_str = String::from_utf8(body.clone()).unwrap();
+        let timestamp = push_auth::unix_timestamp_now().as_secs().to_string();
+        let signature = sign(secret, &timestamp, &body);
+        let headers = headers_with(&timestamp, &signature);
+
+        let resp = handler
+            .handle_http_raw_authenticated(&headers, &body_str)
+            .await
+            .unwrap();
+        assert_eq!(resp.status, "completed");
+    }
 }
