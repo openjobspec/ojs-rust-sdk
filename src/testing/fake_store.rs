@@ -439,4 +439,169 @@ mod tests {
         store.clear_all();
         assert!(store.all_enqueued().is_empty());
     }
+
+    #[test]
+    fn test_drain_tolerates_reentrant_clear_and_does_not_corrupt_replacement_job() {
+        let store = FakeStore::new();
+        let handler_store = store.clone();
+        store.register_handler("job.clear", move |_job| {
+            handler_store.clear_all();
+            handler_store.record_enqueue("job.replacement", vec![], None, None);
+            Ok(())
+        });
+        store.record_enqueue("job.clear", vec![], None, None);
+
+        assert_eq!(store.drain(), 1);
+        let remaining = store.all_enqueued();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].job_type, "job.replacement");
+        assert_eq!(remaining[0].state, "available");
+        assert_eq!(remaining[0].attempt, 0);
+        store.refute_performed("job.clear");
+    }
+
+    fn meta_of(pairs: &[(&str, serde_json::Value)]) -> HashMap<String, serde_json::Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), v.clone()))
+            .collect()
+    }
+
+    fn seeded_store() -> FakeStore {
+        let store = FakeStore::new();
+        store.record_enqueue(
+            "email.send",
+            vec![serde_json::json!({"to": "a@example.com"})],
+            Some("email"),
+            Some(meta_of(&[("tenant", serde_json::json!("acme"))])),
+        );
+        store.record_enqueue(
+            "email.send",
+            vec![serde_json::json!({"to": "b@example.com"})],
+            Some("reports"),
+            Some(meta_of(&[("tenant", serde_json::json!("globex"))])),
+        );
+        store.record_enqueue(
+            "report.generate",
+            vec![serde_json::json!({"range": "monthly"})],
+            Some("reports"),
+            Some(meta_of(&[("tenant", serde_json::json!("acme"))])),
+        );
+        store
+    }
+
+    #[test]
+    fn test_filter_applies_criteria_without_a_job_type() {
+        let store = seeded_store();
+        let criteria = MatchCriteria {
+            queue: Some("reports".to_string()),
+            ..Default::default()
+        };
+
+        // Criteria are an independent predicate: they must apply even when
+        // no job type is supplied.
+        let matches = store.all_enqueued_matching(None, Some(&criteria));
+        assert_eq!(matches.len(), 2);
+        assert!(matches.iter().all(|j| j.queue == "reports"));
+    }
+
+    #[test]
+    fn test_filter_applies_meta_criteria_without_a_job_type() {
+        let store = seeded_store();
+        let criteria = MatchCriteria {
+            meta: Some(meta_of(&[("tenant", serde_json::json!("acme"))])),
+            ..Default::default()
+        };
+
+        let matches = store.all_enqueued_matching(None, Some(&criteria));
+        assert_eq!(matches.len(), 2);
+        let mut types: Vec<&str> = matches.iter().map(|j| j.job_type.as_str()).collect();
+        types.sort_unstable();
+        assert_eq!(types, ["email.send", "report.generate"]);
+    }
+
+    #[test]
+    fn test_filter_by_type_only() {
+        let store = seeded_store();
+        assert_eq!(
+            store.all_enqueued_matching(Some("email.send"), None).len(),
+            2
+        );
+        assert_eq!(
+            store
+                .all_enqueued_matching(Some("report.generate"), None)
+                .len(),
+            1
+        );
+        assert!(store.all_enqueued_matching(Some("nope"), None).is_empty());
+    }
+
+    #[test]
+    fn test_filter_by_type_and_criteria_combined() {
+        let store = seeded_store();
+        let criteria = MatchCriteria {
+            queue: Some("reports".to_string()),
+            ..Default::default()
+        };
+
+        let matches = store.all_enqueued_matching(Some("email.send"), Some(&criteria));
+        assert_eq!(matches.len(), 1);
+        assert_eq!(
+            matches[0].args,
+            vec![serde_json::json!({"to": "b@example.com"})]
+        );
+    }
+
+    #[test]
+    fn test_filter_without_type_or_criteria_returns_everything() {
+        let store = seeded_store();
+        assert_eq!(store.all_enqueued_matching(None, None).len(), 3);
+        assert_eq!(
+            store
+                .all_enqueued_matching(None, Some(&MatchCriteria::default()))
+                .len(),
+            3
+        );
+    }
+
+    #[test]
+    fn test_filter_args_use_deep_equality() {
+        let store = FakeStore::new();
+        store.record_enqueue(
+            "payment.charge",
+            vec![serde_json::json!({"amount": {"cents": 100, "currency": "USD"}})],
+            None,
+            None,
+        );
+
+        let exact = MatchCriteria {
+            args: Some(vec![
+                serde_json::json!({"amount": {"currency": "USD", "cents": 100}}),
+            ]),
+            ..Default::default()
+        };
+        assert_eq!(
+            store.all_enqueued_matching(None, Some(&exact)).len(),
+            1,
+            "object key order must not affect deep equality"
+        );
+
+        let nested_mismatch = MatchCriteria {
+            args: Some(vec![
+                serde_json::json!({"amount": {"cents": 100, "currency": "EUR"}}),
+            ]),
+            ..Default::default()
+        };
+        assert!(store
+            .all_enqueued_matching(None, Some(&nested_mismatch))
+            .is_empty());
+
+        let arity_mismatch = MatchCriteria {
+            args: Some(vec![]),
+            ..Default::default()
+        };
+        assert!(store
+            .all_enqueued_matching(None, Some(&arity_mismatch))
+            .is_empty());
+    }
 }
