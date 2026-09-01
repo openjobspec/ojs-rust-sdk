@@ -270,3 +270,386 @@ async fn force_nack_one(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transport::{Method, Transport};
+    use crate::worker::report::ReportPhase;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    /// Records every forced NACK so tests can assert exactly-once release.
+    #[derive(Debug, Default)]
+    struct RecordingTransport {
+        nacked_job_ids: Mutex<Vec<String>>,
+    }
+
+    impl RecordingTransport {
+        fn nacked(&self) -> Vec<String> {
+            let mut got = self
+                .nacked_job_ids
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            got.sort();
+            got
+        }
+    }
+
+    impl Transport for RecordingTransport {
+        fn request(
+            &self,
+            _method: Method,
+            path: &str,
+            body: Option<serde_json::Value>,
+            _raw_path: bool,
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<Output = crate::Result<Option<serde_json::Value>>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            assert_eq!(path, "/workers/nack");
+            let job_id = body
+                .as_ref()
+                .and_then(|b| b.get("job_id"))
+                .and_then(|v| v.as_str())
+                .unwrap()
+                .to_string();
+            Box::pin(async move {
+                self.nacked_job_ids
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(job_id);
+                Ok(None)
+            })
+        }
+    }
+
+    fn deadlines() -> (tokio::time::Instant, tokio::time::Instant) {
+        let started = tokio::time::Instant::now();
+        (
+            started + IN_FLIGHT_REPORT_TIMEOUT,
+            started + FORCED_SHUTDOWN_TIMEOUT,
+        )
+    }
+
+    #[tokio::test]
+    async fn test_forced_plan_sends_one_nack_per_job() {
+        let concrete = Arc::new(RecordingTransport::default());
+        let transport: DynTransport = concrete.clone();
+
+        let jobs: Vec<(String, Arc<ActiveJobState>)> = (0..25)
+            .map(|i| (format!("job-{i}"), Arc::new(ActiveJobState::new())))
+            .collect();
+        let plan = plan_terminal_reports(jobs.clone());
+        assert_eq!(plan.forced.len(), 25);
+        assert!(plan.in_flight.is_empty());
+
+        let (report_deadline, deadline) = deadlines();
+        finish_terminal_reports(transport, plan, report_deadline, deadline).await;
+
+        let mut want: Vec<String> = jobs.iter().map(|(job_id, _)| job_id.clone()).collect();
+        want.sort();
+        assert_eq!(concrete.nacked(), want);
+        for (_, state) in jobs {
+            assert_eq!(state.phase(), ReportPhase::Completed);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_plan_skips_jobs_that_already_reported() {
+        let concrete = Arc::new(RecordingTransport::default());
+        let transport: DynTransport = concrete.clone();
+
+        let reported = Arc::new(ActiveJobState::new());
+        assert!(reported.begin_report(|| tokio::spawn(std::future::ready(()))));
+        reported.finish_report(Ok(()));
+
+        let plan = plan_terminal_reports(vec![
+            ("job-reported".to_string(), reported),
+            (
+                "job-unreported".to_string(),
+                Arc::new(ActiveJobState::new()),
+            ),
+        ]);
+        assert_eq!(plan.already_reported, 1);
+
+        let (report_deadline, deadline) = deadlines();
+        finish_terminal_reports(transport, plan, report_deadline, deadline).await;
+
+        assert_eq!(concrete.nacked(), ["job-unreported"]);
+    }
+
+    #[tokio::test]
+    async fn test_plan_blocks_later_handler_report() {
+        let state = Arc::new(ActiveJobState::new());
+        let plan = plan_terminal_reports(vec![("job-1".to_string(), Arc::clone(&state))]);
+
+        assert_eq!(plan.forced.len(), 1);
+        assert!(
+            !state.begin_report(|| tokio::spawn(std::future::ready(()))),
+            "a later-resuming handler must not claim ACK/NACK reporting"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_in_flight_report_completing_before_deadline_is_not_force_nacked() {
+        let concrete = Arc::new(RecordingTransport::default());
+        let transport: DynTransport = concrete.clone();
+
+        let state = Arc::new(ActiveJobState::new());
+        let reporting = Arc::clone(&state);
+        assert!(state.begin_report(|| tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            reporting.finish_report(Ok(()));
+        })));
+
+        let plan = plan_terminal_reports(vec![("job-in-flight".to_string(), Arc::clone(&state))]);
+        assert_eq!(plan.in_flight.len(), 1);
+        assert!(plan.forced.is_empty());
+
+        let (report_deadline, deadline) = deadlines();
+        finish_terminal_reports(transport, plan, report_deadline, deadline).await;
+
+        assert!(
+            concrete.nacked().is_empty(),
+            "a terminal report that completed within the report deadline must not be duplicated"
+        );
+        assert_eq!(state.phase(), ReportPhase::Completed);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_permanently_pending_report_is_cancelled_then_force_nacked_once() {
+        let concrete = Arc::new(RecordingTransport::default());
+        let transport: DynTransport = concrete.clone();
+
+        let state = Arc::new(ActiveJobState::new());
+        assert!(state.begin_report(|| tokio::spawn(std::future::pending::<()>())));
+
+        let plan = plan_terminal_reports(vec![("job-stuck".to_string(), Arc::clone(&state))]);
+        assert_eq!(plan.in_flight.len(), 1);
+
+        let (report_deadline, deadline) = deadlines();
+        finish_terminal_reports(transport, plan, report_deadline, deadline).await;
+
+        assert_eq!(
+            concrete.nacked(),
+            ["job-stuck"],
+            "a report that never settles must be cancelled and then force-nacked exactly once"
+        );
+        assert_eq!(state.phase(), ReportPhase::Completed);
+        assert!(
+            tokio::time::Instant::now() <= deadline,
+            "cancelling and replacing a stuck report must stay inside the shared deadline"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_failed_in_flight_report_is_released_and_force_nacked() {
+        let concrete = Arc::new(RecordingTransport::default());
+        let transport: DynTransport = concrete.clone();
+
+        let state = Arc::new(ActiveJobState::new());
+        let reporting = Arc::clone(&state);
+        assert!(state.begin_report(|| tokio::spawn(async move {
+            reporting.finish_report(Err("connection reset".to_string()));
+        })));
+
+        let plan = plan_terminal_reports(vec![("job-failed".to_string(), Arc::clone(&state))]);
+        let (report_deadline, deadline) = deadlines();
+        finish_terminal_reports(transport, plan, report_deadline, deadline).await;
+
+        assert_eq!(
+            concrete.nacked(),
+            ["job-failed"],
+            "a released (failed) terminal report must still be force-released at shutdown"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_failed_forced_nack_retains_shutdown_ownership() {
+        #[derive(Debug)]
+        struct FailingTransport;
+
+        impl Transport for FailingTransport {
+            fn request(
+                &self,
+                _method: Method,
+                path: &str,
+                _body: Option<serde_json::Value>,
+                _raw_path: bool,
+            ) -> Pin<
+                Box<
+                    dyn std::future::Future<Output = crate::Result<Option<serde_json::Value>>>
+                        + Send
+                        + '_,
+                >,
+            > {
+                assert_eq!(path, "/workers/nack");
+                Box::pin(async {
+                    Err(crate::errors::OjsError::Transport(
+                        "server rejected forced nack".to_string(),
+                    ))
+                })
+            }
+        }
+
+        let transport: DynTransport = Arc::new(FailingTransport);
+        let state = Arc::new(ActiveJobState::new());
+        assert_eq!(state.claim_for_shutdown(), ShutdownClaim::Forced);
+
+        force_nack_one(
+            &transport,
+            "job-failed-forced-nack",
+            &state,
+            tokio::time::Instant::now() + Duration::from_secs(1),
+        )
+        .await;
+
+        assert_eq!(state.phase(), ReportPhase::Reporting);
+        assert!(state
+            .last_error()
+            .is_some_and(|error| error.contains("server rejected forced nack")));
+        assert!(
+            !state.begin_report(|| tokio::spawn(std::future::ready(()))),
+            "a late handler must not report after a forced nack may have reached the server"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_forced_nacks_are_bounded_and_use_one_global_deadline() {
+        #[derive(Debug)]
+        struct HangingTransport {
+            started: AtomicUsize,
+        }
+
+        impl Transport for HangingTransport {
+            fn request(
+                &self,
+                _method: Method,
+                path: &str,
+                _body: Option<serde_json::Value>,
+                _raw_path: bool,
+            ) -> Pin<
+                Box<
+                    dyn std::future::Future<Output = crate::Result<Option<serde_json::Value>>>
+                        + Send
+                        + '_,
+                >,
+            > {
+                assert_eq!(path, "/workers/nack");
+                self.started.fetch_add(1, Ordering::SeqCst);
+                Box::pin(std::future::pending::<
+                    crate::Result<Option<serde_json::Value>>,
+                >())
+            }
+        }
+
+        let concrete = Arc::new(HangingTransport {
+            started: AtomicUsize::new(0),
+        });
+        let transport: DynTransport = concrete.clone();
+
+        let jobs: Vec<(String, Arc<ActiveJobState>)> = (0..1000)
+            .map(|i| (format!("job-{i}"), Arc::new(ActiveJobState::new())))
+            .collect();
+
+        let (report_deadline, deadline) = deadlines();
+        let plan = plan_terminal_reports(jobs.clone());
+        let handle = tokio::spawn(async move {
+            finish_terminal_reports(transport, plan, report_deadline, deadline).await;
+        });
+
+        for _ in 0..128 {
+            if concrete.started.load(Ordering::SeqCst) == FORCED_NACK_CONCURRENCY {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            concrete.started.load(Ordering::SeqCst),
+            FORCED_NACK_CONCURRENCY,
+            "only the bounded first wave should be in flight"
+        );
+
+        tokio::time::advance(FORCED_SHUTDOWN_TIMEOUT + Duration::from_millis(1)).await;
+        handle.await.unwrap();
+        assert_eq!(
+            concrete.started.load(Ordering::SeqCst),
+            FORCED_NACK_CONCURRENCY,
+            "queued jobs must not start after the shared deadline"
+        );
+        for (job_id, state) in jobs {
+            assert_eq!(
+                state.phase(),
+                ReportPhase::Reporting,
+                "{job_id} must remain shutdown-owned after a timed-out or skipped forced nack"
+            );
+            assert!(
+                !state.begin_report(|| tokio::spawn(std::future::ready(()))),
+                "{job_id} must reject a late handler report after shutdown's forced claim"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_one_thousand_jobs_are_reported_exactly_once() {
+        let concrete = Arc::new(RecordingTransport::default());
+        let transport: DynTransport = concrete.clone();
+
+        // A realistic shutdown mix: a third never started reporting, a third
+        // has a report in flight that settles, and a third is stuck forever.
+        let mut jobs = Vec::new();
+        let mut expected_nacks = Vec::new();
+        for i in 0..1000 {
+            let state = Arc::new(ActiveJobState::new());
+            let job_id = format!("job-{i:04}");
+            match i % 3 {
+                0 => expected_nacks.push(job_id.clone()),
+                1 => {
+                    let reporting = Arc::clone(&state);
+                    assert!(state.begin_report(|| tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                        reporting.finish_report(Ok(()));
+                    })));
+                }
+                _ => {
+                    assert!(state.begin_report(|| tokio::spawn(std::future::pending::<()>())));
+                    expected_nacks.push(job_id.clone());
+                }
+            }
+            jobs.push((job_id, state));
+        }
+        expected_nacks.sort();
+
+        let started = tokio::time::Instant::now();
+        let report_deadline = started + Duration::from_millis(250);
+        let deadline = started + FORCED_SHUTDOWN_TIMEOUT;
+        let plan = plan_terminal_reports(jobs.clone());
+        assert_eq!(plan.forced.len(), 334);
+        assert_eq!(plan.in_flight.len(), 666);
+
+        finish_terminal_reports(transport, plan, report_deadline, deadline).await;
+
+        let nacked = concrete.nacked();
+        let unique: std::collections::HashSet<&String> = nacked.iter().collect();
+        assert_eq!(
+            unique.len(),
+            nacked.len(),
+            "no job may be reported more than once"
+        );
+        assert_eq!(nacked, expected_nacks);
+        for (job_id, state) in jobs {
+            assert_eq!(
+                state.phase(),
+                ReportPhase::Completed,
+                "{job_id} must end shutdown with exactly one successful terminal report"
+            );
+        }
+        assert!(tokio::time::Instant::now() <= deadline);
+    }
+}

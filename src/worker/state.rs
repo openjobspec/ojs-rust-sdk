@@ -64,3 +64,54 @@ pub(crate) fn transition_shared(state: &AtomicU8, new: WorkerState) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn test_terminate_is_absorbing_against_later_quiet() {
+        let state = Arc::new(AtomicU8::new(WorkerState::Running as u8));
+
+        transition_shared(&state, WorkerState::Terminate);
+        // A server-directed "quiet" (or "running") that arrives after
+        // Terminate was already set must not revert it.
+        transition_shared(&state, WorkerState::Quiet);
+
+        assert_eq!(
+            WorkerState::from_u8(state.load(Ordering::SeqCst)),
+            WorkerState::Terminate
+        );
+    }
+
+    #[test]
+    fn test_terminate_is_absorbing_against_later_running() {
+        let state = Arc::new(AtomicU8::new(WorkerState::Quiet as u8));
+
+        transition_shared(&state, WorkerState::Terminate);
+        transition_shared(&state, WorkerState::Running);
+
+        assert_eq!(
+            WorkerState::from_u8(state.load(Ordering::SeqCst)),
+            WorkerState::Terminate
+        );
+    }
+
+    #[test]
+    fn test_normal_transitions_still_apply_before_terminate() {
+        let state = Arc::new(AtomicU8::new(WorkerState::Running as u8));
+
+        transition_shared(&state, WorkerState::Quiet);
+        assert_eq!(
+            WorkerState::from_u8(state.load(Ordering::SeqCst)),
+            WorkerState::Quiet
+        );
+
+        transition_shared(&state, WorkerState::Running);
+        assert_eq!(
+            WorkerState::from_u8(state.load(Ordering::SeqCst)),
+            WorkerState::Running
+        );
+    }
+}

@@ -206,3 +206,137 @@ impl ActiveJobState {
         true
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    fn noop_task() -> JoinHandle<()> {
+        tokio::spawn(std::future::ready(()))
+    }
+
+    #[tokio::test]
+    async fn test_new_state_is_unclaimed() {
+        let state = ActiveJobState::new();
+        assert_eq!(state.phase(), ReportPhase::Unclaimed);
+        assert!(state.last_error().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_begin_report_is_exclusive() {
+        let state = ActiveJobState::new();
+        assert!(state.begin_report(noop_task));
+        assert_eq!(state.phase(), ReportPhase::Reporting);
+        assert!(
+            !state.begin_report(noop_task),
+            "a second owner must not be able to start a terminal report"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_successful_report_is_absorbing() {
+        let state = ActiveJobState::new();
+        assert!(state.begin_report(noop_task));
+        state.finish_report(Ok(()));
+
+        assert_eq!(state.phase(), ReportPhase::Completed);
+        assert!(!state.begin_report(noop_task));
+        assert_eq!(state.claim_for_shutdown(), ShutdownClaim::AlreadyReported);
+        assert!(!state.claim_after_report_settled());
+    }
+
+    #[tokio::test]
+    async fn test_failed_report_releases_ownership_and_records_error() {
+        let state = ActiveJobState::new();
+        assert!(state.begin_report(noop_task));
+        state.finish_report(Err("connection reset".to_string()));
+
+        assert_eq!(state.phase(), ReportPhase::Unclaimed);
+        assert_eq!(state.last_error().as_deref(), Some("connection reset"));
+        assert_eq!(
+            state.claim_for_shutdown(),
+            ShutdownClaim::Forced,
+            "a released job must still be force-releasable at shutdown"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_failed_shutdown_report_retains_ownership_and_records_error() {
+        let state = ActiveJobState::new();
+        assert_eq!(state.claim_for_shutdown(), ShutdownClaim::Forced);
+        state.finish_shutdown_report(Err("deadline elapsed".to_string()));
+
+        assert_eq!(state.phase(), ReportPhase::Reporting);
+        assert_eq!(state.last_error().as_deref(), Some("deadline elapsed"));
+        assert!(
+            !state.begin_report(noop_task),
+            "a late handler must not report after shutdown's attempt may have reached the server"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_claim_blocks_a_later_handler_report() {
+        let state = ActiveJobState::new();
+        assert_eq!(state.claim_for_shutdown(), ShutdownClaim::Forced);
+        assert!(
+            !state.begin_report(noop_task),
+            "a handler resuming after the forced claim must not report"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_observes_in_flight_report_with_its_task() {
+        let state = ActiveJobState::new();
+        assert!(state.begin_report(|| tokio::spawn(std::future::pending::<()>())));
+
+        assert_eq!(state.claim_for_shutdown(), ShutdownClaim::ReportInFlight);
+        let handle = state
+            .take_report_task()
+            .expect("an in-flight report must expose its task to shutdown");
+        handle.abort();
+        let _ = handle.await;
+
+        assert!(
+            state.claim_after_report_settled(),
+            "a cancelled report leaves the job unreported, so shutdown takes over"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_concurrent_owners_produce_exactly_one_report() {
+        for _ in 0..256 {
+            let state = Arc::new(ActiveJobState::new());
+            let owners = Arc::new(AtomicUsize::new(0));
+
+            let mut tasks = Vec::new();
+            for _ in 0..8 {
+                let state = Arc::clone(&state);
+                let owners = Arc::clone(&owners);
+                tasks.push(tokio::spawn(async move {
+                    if state.begin_report(noop_task) {
+                        owners.fetch_add(1, Ordering::SeqCst);
+                    }
+                }));
+            }
+            let shutdown_state = Arc::clone(&state);
+            let shutdown_owners = Arc::clone(&owners);
+            tasks.push(tokio::spawn(async move {
+                if shutdown_state.claim_for_shutdown() == ShutdownClaim::Forced {
+                    shutdown_owners.fetch_add(1, Ordering::SeqCst);
+                }
+            }));
+
+            for task in tasks {
+                task.await.unwrap();
+            }
+
+            assert_eq!(
+                owners.load(Ordering::SeqCst),
+                1,
+                "exactly one party may own a job's terminal report"
+            );
+        }
+    }
+}
