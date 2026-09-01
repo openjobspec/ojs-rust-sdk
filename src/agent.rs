@@ -103,6 +103,7 @@ pub struct Divergence {
 pub struct AgentClient {
     base_url: String,
     http_client: reqwest::Client,
+    auth_token: Option<String>,
 }
 
 impl AgentClient {
@@ -114,6 +115,7 @@ impl AgentClient {
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             http_client: reqwest::Client::new(),
+            auth_token: None,
         })
     }
 
@@ -125,16 +127,31 @@ impl AgentClient {
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             http_client: client,
+            auth_token: None,
         })
+    }
+
+    /// Set the authentication bearer token sent as `Authorization: Bearer
+    /// <token>` on every request. Consuming/fluent, matching
+    /// [`Client::builder`](crate::client::ClientBuilder::auth_token) and
+    /// [`Worker::builder`](crate::worker::WorkerBuilder::auth_token).
+    pub fn auth_token(mut self, token: impl Into<String>) -> Self {
+        self.auth_token = Some(token.into());
+        self
+    }
+
+    fn apply_auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match &self.auth_token {
+            Some(token) => req.bearer_auth(token),
+            None => req,
+        }
     }
 
     /// Creates a new execution branch diverging at the turn specified in opts.
     pub async fn fork(&self, job_id: &str, opts: &ForkOptions) -> Result<ForkResult, OjsError> {
         let url = format!("{}/v1/agent/jobs/{}/fork", self.base_url, job_id);
-        let resp = self
-            .http_client
-            .post(&url)
-            .json(opts)
+        let req = self.apply_auth(self.http_client.post(&url)).json(opts);
+        let resp = req
             .send()
             .await
             .map_err(|e| OjsError::Transport(e.to_string()))?;
@@ -144,10 +161,8 @@ impl AgentClient {
     /// Combines two branches using the strategy specified in opts.
     pub async fn merge(&self, job_id: &str, opts: &MergeOptions) -> Result<MergeResult, OjsError> {
         let url = format!("{}/v1/agent/jobs/{}/merge", self.base_url, job_id);
-        let resp = self
-            .http_client
-            .post(&url)
-            .json(opts)
+        let req = self.apply_auth(self.http_client.post(&url)).json(opts);
+        let resp = req
             .send()
             .await
             .map_err(|e| OjsError::Transport(e.to_string()))?;
@@ -158,27 +173,23 @@ impl AgentClient {
     pub async fn pause(&self, job_id: &str, reason: &str) -> Result<(), OjsError> {
         let url = format!("{}/v1/agent/jobs/{}/pause", self.base_url, job_id);
         let body = serde_json::json!({ "reason": reason });
-        let resp = self
-            .http_client
-            .post(&url)
-            .json(&body)
+        let req = self.apply_auth(self.http_client.post(&url)).json(&body);
+        let resp = req
             .send()
             .await
             .map_err(|e| OjsError::Transport(e.to_string()))?;
-        Self::handle_empty_response(resp).await
+        Self::handle_empty_response(resp)
     }
 
     /// Instructs a paused agent to continue or abort based on the decision.
     pub async fn resume(&self, job_id: &str, decision: &ResumeDecision) -> Result<(), OjsError> {
         let url = format!("{}/v1/agent/jobs/{}/resume", self.base_url, job_id);
-        let resp = self
-            .http_client
-            .post(&url)
-            .json(decision)
+        let req = self.apply_auth(self.http_client.post(&url)).json(decision);
+        let resp = req
             .send()
             .await
             .map_err(|e| OjsError::Transport(e.to_string()))?;
-        Self::handle_empty_response(resp).await
+        Self::handle_empty_response(resp)
     }
 
     /// Re-executes the given job deterministically from the specified turn.
@@ -188,10 +199,8 @@ impl AgentClient {
         opts: &ReplayOptions,
     ) -> Result<ReplayResult, OjsError> {
         let url = format!("{}/v1/agent/jobs/{}/replay", self.base_url, job_id);
-        let resp = self
-            .http_client
-            .post(&url)
-            .json(opts)
+        let req = self.apply_auth(self.http_client.post(&url)).json(opts);
+        let resp = req
             .send()
             .await
             .map_err(|e| OjsError::Transport(e.to_string()))?;
@@ -202,27 +211,30 @@ impl AgentClient {
         resp: reqwest::Response,
     ) -> Result<T, OjsError> {
         let status = resp.status().as_u16();
-        match status {
-            200..=299 => resp
-                .json::<T>()
-                .await
-                .map_err(|e| OjsError::Transport(e.to_string())),
-            404 => Err(OjsError::Transport("agent not found".into())),
-            409 => Err(OjsError::Transport("branch conflict".into())),
-            422 => Err(OjsError::Transport("agent is not paused".into())),
-            _ => Err(OjsError::Transport(format!("unexpected status {status}"))),
-        }
+        classify_status_error(status)?;
+        resp.json::<T>()
+            .await
+            .map_err(|e| OjsError::Transport(e.to_string()))
     }
 
-    async fn handle_empty_response(resp: reqwest::Response) -> Result<(), OjsError> {
-        let status = resp.status().as_u16();
-        match status {
-            200..=299 => Ok(()),
-            404 => Err(OjsError::Transport("agent not found".into())),
-            409 => Err(OjsError::Transport("branch conflict".into())),
-            422 => Err(OjsError::Transport("agent is not paused".into())),
-            _ => Err(OjsError::Transport(format!("unexpected status {status}"))),
-        }
+    fn handle_empty_response(resp: reqwest::Response) -> Result<(), OjsError> {
+        classify_status_error(resp.status().as_u16())
+    }
+}
+
+/// Classify an Agent API HTTP status code into `Ok(())` for success or the
+/// shared `OjsError` used across all Agent API operations.
+///
+/// Centralizing this avoids duplicating the same status-code table between
+/// [`AgentClient::handle_response`] (which also decodes a JSON body) and
+/// [`AgentClient::handle_empty_response`] (which does not).
+fn classify_status_error(status: u16) -> Result<(), OjsError> {
+    match status {
+        200..=299 => Ok(()),
+        404 => Err(OjsError::Transport("agent not found".into())),
+        409 => Err(OjsError::Transport("branch conflict".into())),
+        422 => Err(OjsError::Transport("agent is not paused".into())),
+        _ => Err(OjsError::Transport(format!("unexpected status {status}"))),
     }
 }
 
