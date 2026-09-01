@@ -122,6 +122,41 @@ pub(crate) fn validate_enqueue_options(options: &[EnqueueOption]) -> crate::Resu
 }
 
 #[cfg(test)]
+mod shared_path_tests {
+    use super::{validate_enqueue_options, validate_job_type};
+    use crate::workflow::EnqueueOption;
+
+    #[test]
+    fn job_type_length_is_byte_based() {
+        // 255 ASCII bytes ok; segments still must match [a-z][a-z0-9_]*.
+        let exact = "a".repeat(255);
+        assert!(validate_job_type(&exact).is_ok());
+        let over = "a".repeat(256);
+        let err = validate_job_type(&over).unwrap_err().to_string();
+        assert!(err.contains("255 bytes"), "got: {err}");
+    }
+
+    #[test]
+    fn enqueue_options_path_enforces_byte_length() {
+        // This is the shared entry point used by direct enqueue, workflow
+        // step options, workflow-level defaults, and batch callbacks.
+        let over = "a".repeat(256);
+        let opts = vec![EnqueueOption::Queue(over)];
+        let err = validate_enqueue_options(&opts).unwrap_err().to_string();
+        assert!(
+            err.contains("255 bytes"),
+            "workflow/defaults path did not enforce 255-byte queue limit: {err}"
+        );
+
+        // A multibyte value exceeding 255 bytes is also rejected on length.
+        let multibyte = "猫".repeat(200); // 600 bytes
+        let opts = vec![EnqueueOption::Queue(multibyte)];
+        let err = validate_enqueue_options(&opts).unwrap_err().to_string();
+        assert!(err.contains("255 bytes"), "got: {err}");
+    }
+}
+
+#[cfg(test)]
 mod queue_validation_tests {
     use super::validate_queue_name;
 
@@ -138,6 +173,59 @@ mod queue_validation_tests {
     #[test]
     fn rejects_empty() {
         assert!(validate_queue_name("").is_err());
+    }
+
+    #[test]
+    fn accepts_exactly_255_bytes() {
+        // 255 ASCII bytes == 255 UTF-8 bytes: the canonical maximum.
+        let exact = "a".repeat(255);
+        assert_eq!(exact.len(), 255);
+        assert!(validate_queue_name(&exact).is_ok());
+    }
+
+    #[test]
+    fn rejects_256_bytes() {
+        let over = "a".repeat(256);
+        assert_eq!(over.len(), 256);
+        let err = validate_queue_name(&over).unwrap_err().to_string();
+        assert!(
+            err.contains("255 bytes"),
+            "expected byte-based length error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn length_limit_is_measured_in_bytes_not_scalars() {
+        // The canonical allowed pattern `^[a-zA-Z0-9_.-]{1,255}$` is
+        // ASCII-only, so multibyte characters are never *accepted*. This test
+        // documents the pragmatic interpretation: the byte-based length check
+        // runs *before* pattern validation, so a multibyte string whose
+        // Unicode scalar count is <= 255 but whose UTF-8 byte length exceeds
+        // 255 is rejected specifically on length grounds.
+        //
+        // 100 * 'é' (U+00E9, 2 bytes each) = 100 scalars but 200 bytes: under
+        // 255 on both axes, so it fails on *pattern* (non-ASCII), not length.
+        let under_bytes = "é".repeat(100);
+        assert_eq!(under_bytes.chars().count(), 100);
+        assert_eq!(under_bytes.len(), 200);
+        let err = validate_queue_name(&under_bytes).unwrap_err().to_string();
+        assert!(
+            !err.contains("255 bytes"),
+            "expected a pattern error (not length) for a <=255-byte value: {err}"
+        );
+
+        // 200 * '猫' (U+732B, 3 bytes each) = 200 scalars but 600 bytes. A
+        // *scalar*-based limit of 255 would wrongly accept the length; the
+        // byte-based limit rejects it, and because length is checked first it
+        // is reported as a length error rather than a pattern error.
+        let over_bytes = "猫".repeat(200);
+        assert_eq!(over_bytes.chars().count(), 200);
+        assert_eq!(over_bytes.len(), 600);
+        let err = validate_queue_name(&over_bytes).unwrap_err().to_string();
+        assert!(
+            err.contains("255 bytes"),
+            "expected byte-based length error for a >255-byte multibyte value: {err}"
+        );
     }
 
     #[test]

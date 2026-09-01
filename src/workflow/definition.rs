@@ -314,3 +314,85 @@ pub(crate) fn normalize_args(args: &serde_json::Value) -> serde_json::Value {
         other => serde_json::Value::Array(vec![other.clone()]),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_workflow_validation_rejects_empty_steps() {
+        assert!(chain(Vec::new()).validate().is_err());
+        assert!(group(Vec::new()).validate().is_err());
+    }
+
+    #[test]
+    fn test_workflow_validation_rejects_empty_batch_callbacks() {
+        let def = batch(BatchCallbacks::new(), vec![Step::new("job.run", json!({}))]);
+        assert!(def.validate().is_err());
+    }
+
+    #[test]
+    fn test_workflow_validation_checks_callback_job_types() {
+        let def = batch(
+            BatchCallbacks::new().on_complete(Step::new("Invalid.Type", json!({}))),
+            vec![Step::new("job.run", json!({}))],
+        );
+        assert!(def.validate().is_err());
+    }
+
+    #[test]
+    fn test_workflow_validation_rejects_invalid_default_before_valid_override() {
+        let def = chain(vec![Step::new("job.run", json!({})).queue("valid-override")])
+            .with_option(EnqueueOption::Queue("Invalid.Default".into()));
+
+        let err = def.validate().unwrap_err();
+        assert!(err.to_string().contains("Invalid.Default"));
+    }
+
+    #[test]
+    fn test_workflow_validation_rejects_invalid_step_override() {
+        let def = chain(vec![
+            Step::new("job.run", json!({})).queue("Invalid.Override")
+        ])
+        .with_option(EnqueueOption::Queue("valid-default".into()));
+
+        let err = def.validate().unwrap_err();
+        assert!(err.to_string().contains("Invalid.Override"));
+    }
+
+    #[test]
+    fn test_workflow_validation_accepts_valid_default_and_override() {
+        let def = chain(vec![Step::new("job.run", json!({})).queue("valid-override")])
+            .with_option(EnqueueOption::Queue("valid-default".into()));
+
+        assert!(def.validate().is_ok());
+    }
+
+    #[test]
+    fn test_workflow_step_queue_uses_255_byte_boundary() {
+        let exact = "a".repeat(255);
+        assert!(chain(vec![Step::new("job.run", json!({})).queue(exact)])
+            .validate()
+            .is_ok());
+
+        let over = "a".repeat(256);
+        let err = chain(vec![Step::new("job.run", json!({})).queue(over)])
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("255 bytes"), "got: {err}");
+    }
+
+    #[test]
+    fn test_workflow_default_queue_uses_utf8_byte_boundary() {
+        let exact = chain(vec![Step::new("job.run", json!({}))])
+            .with_option(EnqueueOption::Queue("a".repeat(255)));
+        assert!(exact.validate().is_ok());
+
+        let over = chain(vec![Step::new("job.run", json!({})).queue("valid-override")])
+            .with_option(EnqueueOption::Queue("猫".repeat(86)));
+        let err = over.validate().unwrap_err().to_string();
+        assert!(err.contains("255 bytes"), "got: {err}");
+    }
+}
