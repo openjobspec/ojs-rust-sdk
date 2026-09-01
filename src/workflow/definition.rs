@@ -253,6 +253,13 @@ impl WorkflowDefinition {
     }
 
     /// Add default options applied to all steps.
+    ///
+    /// The OJS workflow wire format has no root-level `options` field (only
+    /// per-job `options`; see `WorkflowJobWire`), so defaults set here are
+    /// materialized into every step/job's own `options` at request-build
+    /// time, with each step's own options taking precedence for anything
+    /// they override. Defaults are validated locally before step/callback
+    /// options, so an invalid default cannot be hidden by a valid override.
     pub fn with_option(mut self, opt: EnqueueOption) -> Self {
         self.options.push(opt);
         self

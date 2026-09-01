@@ -301,17 +301,23 @@ impl Client {
     pub async fn create_workflow(&self, def: WorkflowDefinition) -> crate::Result<Workflow> {
         def.validate()?;
         let wire = def.to_wire();
-        transport::transport_post(&self.transport, "/workflows", &wire).await
+        let resp: crate::workflow::WorkflowResponseWire =
+            transport::transport_post(&self.transport, "/workflows", &wire).await?;
+        Ok(resp.workflow)
     }
 
     /// Get workflow status by ID.
     pub async fn get_workflow(&self, id: &str) -> crate::Result<Workflow> {
-        transport::transport_get(&self.transport, &format!("/workflows/{}", id)).await
+        let resp: crate::workflow::WorkflowResponseWire =
+            transport::transport_get(&self.transport, &format!("/workflows/{}", id)).await?;
+        Ok(resp.workflow)
     }
 
     /// Cancel a workflow by ID.
     pub async fn cancel_workflow(&self, id: &str) -> crate::Result<Workflow> {
-        transport::transport_delete(&self.transport, &format!("/workflows/{}", id)).await
+        let resp: crate::workflow::WorkflowResponseWire =
+            transport::transport_delete(&self.transport, &format!("/workflows/{}", id)).await?;
+        Ok(resp.workflow)
     }
 
     // -----------------------------------------------------------------------
