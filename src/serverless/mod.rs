@@ -17,7 +17,7 @@
 //! # AWS Lambda with SQS
 //!
 //! The most common pattern is using SQS event source mapping to trigger Lambda
-//! functions. The [`LambdaHandler`] wraps your job handlers and translates SQS
+//! functions. The [`LambdaHandler`](crate::serverless::aws_lambda::LambdaHandler) wraps your job handlers and translates SQS
 //! events into OJS job processing:
 //!
 //! ```rust,ignore
@@ -50,7 +50,7 @@
 //! # Direct Invocation
 //!
 //! For direct Lambda invocation with a single job payload, use
-//! [`LambdaHandler::handle_direct`].
+//! [`LambdaHandler::handle_direct`](crate::serverless::aws_lambda::LambdaHandler::handle_direct).
 
 #[cfg(feature = "serverless-lambda")]
 #[cfg_attr(docsrs, doc(cfg(feature = "serverless-lambda")))]
