@@ -176,18 +176,22 @@ async fn test_batch_enqueue() {
 async fn test_get_job() {
     let server = MockServer::start().await;
 
+    // Per ojs-http-binding.md §9.3, GET /jobs/:id wraps the job in a
+    // top-level "job" object.
     Mock::given(method("GET"))
         .and(path("/ojs/v1/jobs/job-123"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "specversion": "1.0",
-            "id": "job-123",
-            "type": "email.send",
-            "queue": "default",
-            "args": [{"to": "user@example.com"}],
-            "state": "active",
-            "attempt": 1,
-            "priority": 0,
-            "tags": []
+            "job": {
+                "specversion": "1.0",
+                "id": "job-123",
+                "type": "email.send",
+                "queue": "default",
+                "args": [{"to": "user@example.com"}],
+                "state": "active",
+                "attempt": 1,
+                "priority": 0,
+                "tags": []
+            }
         })))
         .expect(1)
         .mount(&server)
@@ -205,18 +209,22 @@ async fn test_get_job() {
 async fn test_cancel_job() {
     let server = MockServer::start().await;
 
+    // Per ojs-http-binding.md §9.4, DELETE /jobs/:id wraps the job in a
+    // top-level "job" object.
     Mock::given(method("DELETE"))
         .and(path("/ojs/v1/jobs/job-456"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "specversion": "1.0",
-            "id": "job-456",
-            "type": "test",
-            "queue": "default",
-            "args": [],
-            "state": "cancelled",
-            "attempt": 0,
-            "priority": 0,
-            "tags": []
+            "job": {
+                "specversion": "1.0",
+                "id": "job-456",
+                "type": "test",
+                "queue": "default",
+                "args": [],
+                "state": "cancelled",
+                "attempt": 0,
+                "priority": 0,
+                "tags": []
+            }
         })))
         .expect(1)
         .mount(&server)
@@ -414,7 +422,16 @@ async fn test_unstructured_error_response() {
         .mount(&server)
         .await;
 
-    let client = Client::builder().url(server.uri()).build().unwrap();
+    // This test asserts how a non-JSON (unstructured) error body is parsed,
+    // not the transport's retry behavior. 502 is retried by default for the
+    // idempotent GET /health request (see `test_rate_limit_error` and
+    // siblings above for the same reason on POST/429), so retries are
+    // disabled here to keep the mock's single expected request accurate.
+    let client = Client::builder()
+        .url(server.uri())
+        .retry_config(RetryConfig::disabled())
+        .build()
+        .unwrap();
     let err = client.health().await.unwrap_err();
 
     match err {
