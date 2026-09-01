@@ -19,8 +19,10 @@
 //! }
 //! ```
 
+use futures_util::StreamExt;
 use reqwest::Client;
 use std::error::Error;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// A single SSE event from the OJS server.
@@ -38,98 +40,469 @@ pub struct SseEvent {
 pub struct SubscribeOptions {
     /// Base URL of the OJS server.
     pub url: String,
-    /// SSE channel (e.g., "job:<id>", "queue:<name>").
+    /// SSE channel (e.g., `"job:<id>"`, `"queue:<name>"`).
     pub channel: String,
     /// Bearer auth token (optional).
     pub auth: Option<String>,
 }
 
+// ---------------------------------------------------------------------------
+// Reconnect tuning
+// ---------------------------------------------------------------------------
+
+/// Maximum number of bytes buffered while waiting for a complete SSE line.
+/// A misbehaving or malicious peer that never sends a newline would
+/// otherwise grow this buffer without bound; exceeding this closes the
+/// connection (and triggers a reconnect) instead.
+const MAX_LINE_BUFFER: usize = 1024 * 1024; // 1 MiB
+
+const MIN_RECONNECT_BACKOFF: Duration = Duration::from_millis(250);
+const MAX_RECONNECT_BACKOFF: Duration = Duration::from_secs(30);
+
 /// Subscribe to an SSE event stream from the OJS server.
 ///
-/// Returns a receiver channel that yields events as they arrive.
-/// Drop the receiver to disconnect.
+/// Returns a receiver channel that yields events as they arrive. Drop the
+/// receiver to disconnect and stop the background reconnect loop.
+///
+/// Only an HTTP `200 OK` response with `Content-Type: text/event-stream`
+/// starts a stream. `204 No Content` is treated as a terminal "stop
+/// reconnecting" response and returns a closed receiver immediately. A `4xx`
+/// response (e.g. invalid channel or missing authorization) is treated as
+/// permanently non-retryable. Transient connect failures (network errors and
+/// `5xx` responses) are retried in the background with bounded exponential
+/// backoff, resuming via `Last-Event-ID` when the server sent event IDs.
+/// Dropping the returned receiver cancels idle body reads, reconnect sleeps,
+/// and in-flight reconnect requests. Per the SSE parsing rules, an explicit
+/// empty `id:` clears the stored value and the next reconnect omits the
+/// `Last-Event-ID` header.
 pub async fn subscribe(
     opts: SubscribeOptions,
 ) -> Result<mpsc::Receiver<SseEvent>, Box<dyn Error + Send + Sync>> {
-    let url = format!(
-        "{}/ojs/v1/events/stream?channel={}",
-        opts.url.trim_end_matches('/'),
-        urlencoding::encode(&opts.channel)
-    );
-
+    let base_url = opts.url.trim_end_matches('/').to_string();
+    let channel = opts.channel;
+    let auth = opts.auth;
     let client = Client::new();
-    let mut req = client
-        .get(&url)
-        .header("Accept", "text/event-stream")
-        .header("Cache-Control", "no-cache");
-
-    if let Some(ref token) = opts.auth {
-        req = req.header("Authorization", format!("Bearer {}", token));
-    }
-
-    let response = req.send().await?;
-
-    if !response.status().is_success() {
-        return Err(format!("SSE connection failed: {}", response.status()).into());
-    }
 
     let (tx, rx) = mpsc::channel(64);
 
+    let initial_response = match connect_once(&client, &base_url, &channel, auth.as_deref(), None)
+        .await
+    {
+        Ok(ConnectOutcome::Stream(response)) => Some(response),
+        Ok(ConnectOutcome::Closed) => {
+            drop(tx);
+            return Ok(rx);
+        }
+        Err(ConnectError::Permanent(err)) => return Err(err),
+        Err(ConnectError::Retryable(err)) => {
+            tracing::warn!(error = %err, "initial SSE connection failed transiently, retrying in the background");
+            None
+        }
+    };
+
     tokio::spawn(async move {
-        let mut event_type = String::new();
-        let mut event_id = String::new();
-        let mut event_data = String::new();
+        let mut last_event_id: Option<String> = None;
+        let mut current = initial_response;
 
-        let mut stream = response.bytes_stream();
-        let mut buffer = String::new();
+        loop {
+            if tx.is_closed() {
+                return;
+            }
 
-        use futures_util::StreamExt;
-        while let Some(chunk) = stream.next().await {
-            let chunk = match chunk {
-                Ok(c) => c,
-                Err(_) => break,
-            };
-
-            buffer.push_str(&String::from_utf8_lossy(&chunk));
-
-            while let Some(newline_pos) = buffer.find('\n') {
-                let line = buffer[..newline_pos].to_string();
-                buffer = buffer[newline_pos + 1..].to_string();
-
-                if line.is_empty() {
-                    if !event_data.is_empty() {
-                        let evt = SseEvent {
-                            id: std::mem::take(&mut event_id),
-                            event_type: if event_type.is_empty() {
-                                "message".to_string()
-                            } else {
-                                std::mem::take(&mut event_type)
-                            },
-                            data: std::mem::take(&mut event_data),
-                        };
-                        if tx.send(evt).await.is_err() {
-                            return; // receiver dropped
-                        }
-                    }
-                    event_type.clear();
-                } else if let Some(val) = line.strip_prefix("event:") {
-                    event_type = val.trim_start().to_string();
-                } else if let Some(val) = line.strip_prefix("id:") {
-                    event_id = val.trim_start().to_string();
-                } else if let Some(val) = line.strip_prefix("data:") {
-                    let chunk = val.trim_start();
-                    if event_data.is_empty() {
-                        event_data = chunk.to_string();
-                    } else {
-                        event_data.push('\n');
-                        event_data.push_str(chunk);
-                    }
+            if let Some(response) = current.take() {
+                // `drain_stream` takes the response by value
+                // (`bytes_stream()` consumes `self`) and reads it to
+                // completion, reporting whether the caller (receiver) is
+                // still around.
+                if !drain_stream(response, &tx, &mut last_event_id).await {
+                    return; // receiver dropped mid-stream
                 }
+            }
+
+            match reconnect_until_stream(
+                &client,
+                &base_url,
+                &channel,
+                auth.as_deref(),
+                last_event_id.as_deref(),
+                &tx,
+            )
+            .await
+            {
+                Some(response) => {
+                    current = Some(response);
+                }
+                None => return,
             }
         }
     });
 
     Ok(rx)
+}
+
+/// Read `response`'s body as an SSE stream until it ends or errors,
+/// forwarding parsed events to `tx` and tracking the last seen event ID for
+/// resumption. Returns `false` if `tx`'s receiver was dropped (the caller
+/// should stop entirely); `true` if the stream simply ended and the caller
+/// should attempt to reconnect.
+async fn drain_stream(
+    response: reqwest::Response,
+    tx: &mpsc::Sender<SseEvent>,
+    last_event_id: &mut Option<String>,
+) -> bool {
+    let mut parser = SseParser::new();
+    let mut stream = response.bytes_stream();
+
+    loop {
+        let next_chunk = tokio::select! {
+            _ = tx.closed() => return false,
+            chunk = stream.next() => chunk,
+        };
+        let Some(chunk) = next_chunk else {
+            break;
+        };
+        let chunk = match chunk {
+            Ok(c) => c,
+            Err(_) => break,
+        };
+
+        match parser.feed(&chunk) {
+            Ok(events) => {
+                if let Some(id) = parser.take_last_event_id_update() {
+                    *last_event_id = if id.is_empty() { None } else { Some(id) };
+                }
+                for evt in events {
+                    if tx.send(evt).await.is_err() {
+                        return false; // receiver dropped
+                    }
+                }
+            }
+            Err(SseParseError::BufferOverflow) => {
+                tracing::warn!(
+                    limit = MAX_LINE_BUFFER,
+                    "SSE line buffer exceeded limit, reconnecting"
+                );
+                break;
+            }
+            Err(SseParseError::InvalidUtf8) => {
+                // A complete field line was not valid UTF-8. Treat this as a
+                // fatal stream error and reconnect (the same classification
+                // used for buffer overflow) rather than forwarding
+                // replacement-character-corrupted data to the subscriber.
+                tracing::warn!("SSE stream produced invalid UTF-8, reconnecting");
+                break;
+            }
+        }
+    }
+
+    true
+}
+
+fn reconnect_backoff(attempt: u32) -> Duration {
+    let base_ms = MIN_RECONNECT_BACKOFF.as_millis() as u64;
+    let exp_ms = base_ms.saturating_mul(1u64.checked_shl(attempt.min(20)).unwrap_or(u64::MAX));
+    Duration::from_millis(exp_ms.min(MAX_RECONNECT_BACKOFF.as_millis() as u64))
+}
+
+enum ConnectError {
+    Retryable(Box<dyn Error + Send + Sync>),
+    Permanent(Box<dyn Error + Send + Sync>),
+}
+
+enum ConnectOutcome {
+    Stream(reqwest::Response),
+    Closed,
+}
+
+impl std::fmt::Debug for ConnectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConnectError::Retryable(e) => write!(f, "ConnectError::Retryable({e})"),
+            ConnectError::Permanent(e) => write!(f, "ConnectError::Permanent({e})"),
+        }
+    }
+}
+
+impl std::fmt::Display for ConnectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConnectError::Retryable(e) | ConnectError::Permanent(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for ConnectError {}
+
+async fn connect_once(
+    client: &Client,
+    base_url: &str,
+    channel: &str,
+    auth: Option<&str>,
+    last_event_id: Option<&str>,
+) -> Result<ConnectOutcome, ConnectError> {
+    let url = format!(
+        "{}/ojs/v1/events/stream?channel={}",
+        base_url,
+        urlencoding::encode(channel)
+    );
+
+    let mut req = client
+        .get(&url)
+        .header("Accept", "text/event-stream")
+        .header("Cache-Control", "no-cache");
+
+    if let Some(token) = auth {
+        req = req.header("Authorization", format!("Bearer {token}"));
+    }
+    if let Some(id) = last_event_id {
+        req = req.header("Last-Event-ID", id);
+    }
+
+    let response = req.send().await.map_err(|e| {
+        let is_builder = e.is_builder();
+        classify_connect_error(Box::new(e), is_builder)
+    })?;
+
+    let status = response.status();
+    if status == reqwest::StatusCode::NO_CONTENT {
+        return Ok(ConnectOutcome::Closed);
+    }
+    if status != reqwest::StatusCode::OK {
+        let err: Box<dyn Error + Send + Sync> = format!("SSE connection failed: {status}").into();
+        if status.is_client_error() {
+            return Err(ConnectError::Permanent(err));
+        }
+        return Err(ConnectError::Retryable(err));
+    }
+    validate_event_stream_content_type(&response)?;
+
+    Ok(ConnectOutcome::Stream(response))
+}
+
+async fn reconnect_until_stream(
+    client: &Client,
+    base_url: &str,
+    channel: &str,
+    auth: Option<&str>,
+    last_event_id: Option<&str>,
+    tx: &mpsc::Sender<SseEvent>,
+) -> Option<reqwest::Response> {
+    let mut attempt = 0u32;
+
+    loop {
+        if tx.is_closed() {
+            return None;
+        }
+
+        let delay = reconnect_backoff(attempt);
+        tracing::debug!(
+            attempt = attempt + 1,
+            delay_ms = delay.as_millis() as u64,
+            "SSE stream unavailable, retrying"
+        );
+        tokio::select! {
+            _ = tx.closed() => return None,
+            _ = tokio::time::sleep(delay) => {}
+        }
+        attempt = attempt.saturating_add(1);
+
+        let connect = tokio::select! {
+            _ = tx.closed() => return None,
+            result = connect_once(client, base_url, channel, auth, last_event_id) => result,
+        };
+        match connect {
+            Ok(ConnectOutcome::Stream(response)) => return Some(response),
+            Ok(ConnectOutcome::Closed) => return None,
+            Err(ConnectError::Permanent(err)) => {
+                tracing::warn!(
+                    error = %err,
+                    "SSE reconnect failed permanently, giving up"
+                );
+                return None;
+            }
+            Err(ConnectError::Retryable(err)) => {
+                tracing::warn!(error = %err, "SSE reconnect failed transiently");
+            }
+        }
+    }
+}
+
+fn classify_connect_error(
+    err: Box<dyn Error + Send + Sync>,
+    is_builder_error: bool,
+) -> ConnectError {
+    if is_builder_error {
+        ConnectError::Permanent(err)
+    } else {
+        ConnectError::Retryable(err)
+    }
+}
+
+fn validate_event_stream_content_type(response: &reqwest::Response) -> Result<(), ConnectError> {
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim);
+
+    let Some(content_type) = content_type else {
+        return Err(ConnectError::Permanent(
+            "SSE connection failed: missing Content-Type header".into(),
+        ));
+    };
+
+    let media_type = content_type
+        .split(';')
+        .next()
+        .map(str::trim)
+        .unwrap_or_default();
+
+    if media_type.eq_ignore_ascii_case("text/event-stream") {
+        Ok(())
+    } else {
+        Err(ConnectError::Permanent(
+            format!(
+                "SSE connection failed: expected Content-Type text/event-stream, got {content_type}"
+            )
+            .into(),
+        ))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SSE line/event parsing
+// ---------------------------------------------------------------------------
+
+/// Error returned by [`SseParser::feed`]: the caller should treat either
+/// variant as a fatal stream error and reconnect rather than continuing.
+#[derive(Debug)]
+enum SseParseError {
+    /// Buffering an incomplete line would exceed [`MAX_LINE_BUFFER`].
+    BufferOverflow,
+    /// A *complete* field line was not valid UTF-8.
+    InvalidUtf8,
+}
+
+/// Incremental SSE parser: accumulates raw bytes across `feed()` calls and
+/// yields complete events, handling `\n` and `\r\n` line endings and
+/// bounding how much unterminated data it will buffer.
+///
+/// The buffer holds raw bytes (not a `String`) so that a multibyte UTF-8
+/// sequence split across transport chunks is preserved intact: only
+/// *complete* lines (terminated by a `\n` byte) are UTF-8 decoded, and a
+/// UTF-8 lead/continuation byte can never be `0x0A`, so splitting on the
+/// newline byte never bisects a character. Decoding is strict
+/// ([`std::str::from_utf8`]): invalid bytes surface as
+/// [`SseParseError::InvalidUtf8`] rather than being silently replaced with
+/// U+FFFD.
+struct SseParser {
+    event_type: String,
+    event_id: String,
+    id_field_present: bool,
+    event_data: String,
+    buffer: Vec<u8>,
+}
+
+impl SseParser {
+    fn new() -> Self {
+        Self {
+            event_type: String::new(),
+            event_id: String::new(),
+            id_field_present: false,
+            event_data: String::new(),
+            buffer: Vec::new(),
+        }
+    }
+
+    /// Feed a chunk of raw transport bytes, returning any complete events.
+    ///
+    /// Returns `Err(SseParseError::BufferOverflow)` if buffering an
+    /// incomplete line would exceed [`MAX_LINE_BUFFER`], or
+    /// `Err(SseParseError::InvalidUtf8)` if a complete line is not valid
+    /// UTF-8; the caller should treat either as a fatal stream error
+    /// (reconnect) rather than continuing to buffer unbounded, potentially
+    /// attacker-controlled data or forwarding corrupted text.
+    fn feed(&mut self, chunk: &[u8]) -> Result<Vec<SseEvent>, SseParseError> {
+        self.buffer.extend_from_slice(chunk);
+
+        let mut events = Vec::new();
+
+        // Split complete lines on the raw newline *byte* (0x0A). Partial
+        // multibyte sequences in an as-yet-unterminated line stay buffered as
+        // raw bytes until the rest of the character arrives in a later chunk.
+        while let Some(newline_pos) = self.buffer.iter().position(|&b| b == b'\n') {
+            if newline_pos > MAX_LINE_BUFFER {
+                return Err(SseParseError::BufferOverflow);
+            }
+            let mut line_bytes: Vec<u8> = self.buffer.drain(..=newline_pos).collect();
+            // Remove the trailing '\n', then a trailing '\r' so CRLF-terminated
+            // streams (common with many HTTP servers/proxies) don't leak '\r'
+            // into field values.
+            line_bytes.pop();
+            if line_bytes.last() == Some(&b'\r') {
+                line_bytes.pop();
+            }
+            // Strictly decode the *complete* line; never lossily replace.
+            let line = std::str::from_utf8(&line_bytes).map_err(|_| SseParseError::InvalidUtf8)?;
+
+            if line.is_empty() {
+                if !self.event_data.is_empty() {
+                    events.push(SseEvent {
+                        id: self.event_id.clone(),
+                        event_type: if self.event_type.is_empty() {
+                            "message".to_string()
+                        } else {
+                            std::mem::take(&mut self.event_type)
+                        },
+                        data: std::mem::take(&mut self.event_data),
+                    });
+                }
+                self.event_type.clear();
+            } else if let Some(val) = line.strip_prefix("event:") {
+                self.event_type = strip_one_leading_space(val).to_string();
+            } else if let Some(val) = line.strip_prefix("id:") {
+                self.event_id = strip_one_leading_space(val).to_string();
+                self.id_field_present = true;
+            } else if let Some(val) = line.strip_prefix("data:") {
+                let value = strip_one_leading_space(val);
+                if self.event_data.is_empty() {
+                    self.event_data = value.to_string();
+                } else {
+                    self.event_data.push('\n');
+                    self.event_data.push_str(value);
+                }
+            }
+            // Unrecognized fields (e.g. `retry:`, comments starting with
+            // `:`) are intentionally ignored rather than erroring, per the
+            // permissive WHATWG EventSource parsing model.
+        }
+
+        if self.buffer.len() > MAX_LINE_BUFFER {
+            return Err(SseParseError::BufferOverflow);
+        }
+
+        Ok(events)
+    }
+
+    /// Return the most recent `id:` field parsed since the previous call.
+    ///
+    /// Presence is tracked separately from the value so an explicit empty
+    /// `id:` produces `Some("")`, allowing callers to clear Last-Event-ID,
+    /// while no ID field produces `None`.
+    fn take_last_event_id_update(&mut self) -> Option<String> {
+        if std::mem::take(&mut self.id_field_present) {
+            Some(self.event_id.clone())
+        } else {
+            None
+        }
+    }
+}
+
+/// Per the SSE field-parsing algorithm, only a single leading space after
+/// the colon is stripped -- not all leading whitespace -- so a data payload
+/// that intentionally starts with extra spaces round-trips correctly.
+fn strip_one_leading_space(s: &str) -> &str {
+    s.strip_prefix(' ').unwrap_or(s)
 }
 
 /// Subscribe to events for a specific job.
