@@ -532,3 +532,209 @@ pub async fn subscribe_queue(
     })
     .await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parses_lf_terminated_event() {
+        let mut parser = SseParser::new();
+        let events = parser
+            .feed(b"event: job.completed\nid: 42\ndata: {\"ok\":true}\n\n")
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "job.completed");
+        assert_eq!(events[0].id, "42");
+        assert_eq!(events[0].data, "{\"ok\":true}");
+    }
+
+    #[test]
+    fn test_parses_crlf_terminated_event_without_trailing_cr() {
+        let mut parser = SseParser::new();
+        let events = parser
+            .feed(b"event: job.completed\r\nid: 42\r\ndata: {\"ok\":true}\r\n\r\n")
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        // Before the fix, these would retain a trailing '\r'.
+        assert_eq!(events[0].event_type, "job.completed");
+        assert_eq!(events[0].id, "42");
+        assert_eq!(events[0].data, "{\"ok\":true}");
+        assert!(!events[0].id.contains('\r'));
+        assert!(!events[0].event_type.contains('\r'));
+        assert!(!events[0].data.contains('\r'));
+    }
+
+    #[test]
+    fn test_defaults_to_message_event_type() {
+        let mut parser = SseParser::new();
+        let events = parser.feed(b"data: hello\n\n").unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "message");
+    }
+
+    #[test]
+    fn test_multi_line_data_joined_with_newline() {
+        let mut parser = SseParser::new();
+        let events = parser.feed(b"data: line1\ndata: line2\n\n").unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data, "line1\nline2");
+    }
+
+    #[test]
+    fn test_feed_across_multiple_chunks() {
+        let mut parser = SseParser::new();
+        assert!(parser.feed(b"data: par").unwrap().is_empty());
+        assert!(parser.feed(b"tial\n").unwrap().is_empty());
+        let events = parser.feed(b"\n").unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data, "partial");
+    }
+
+    #[test]
+    fn test_fragmented_crlf_empty_id_clears_last_event_id() {
+        let mut parser = SseParser::new();
+
+        assert!(parser.feed(b"id: retained\r").unwrap().is_empty());
+        let first = parser.feed(b"\ndata: first\r\n\r\nid:\r").unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].id, "retained");
+        assert_eq!(
+            parser.take_last_event_id_update().as_deref(),
+            Some("retained")
+        );
+
+        assert!(parser.feed(b"\n\r\n").unwrap().is_empty());
+        assert_eq!(
+            parser.take_last_event_id_update().as_deref(),
+            Some(""),
+            "an explicit empty id field must be distinguishable from no id field"
+        );
+
+        let next = parser.feed(b"data: after reset\r\n\r\n").unwrap();
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].id, "");
+        assert_eq!(parser.take_last_event_id_update(), None);
+    }
+
+    #[test]
+    fn test_only_one_leading_space_is_stripped() {
+        let mut parser = SseParser::new();
+        // Two leading spaces: only the first (the one directly after the
+        // colon) is part of the field-parsing algorithm's strip rule.
+        let events = parser.feed(b"data:  extra space\n\n").unwrap();
+        assert_eq!(events[0].data, " extra space");
+    }
+
+    #[test]
+    fn test_unbounded_buffer_growth_is_rejected() {
+        let mut parser = SseParser::new();
+        // Never send a newline: without a bound this would grow forever.
+        let chunk = vec![b'x'; MAX_LINE_BUFFER + 1];
+        assert!(parser.feed(&chunk).is_err());
+    }
+
+    #[test]
+    fn test_reconnect_backoff_is_bounded_and_increasing() {
+        let d0 = reconnect_backoff(0);
+        let d1 = reconnect_backoff(1);
+        let d_large = reconnect_backoff(63);
+        assert!(d0 >= MIN_RECONNECT_BACKOFF);
+        assert!(d1 >= d0);
+        assert!(d_large <= MAX_RECONNECT_BACKOFF);
+    }
+
+    /// Feed a full byte sequence one byte at a time, returning all events.
+    fn feed_one_byte_at_a_time(
+        parser: &mut SseParser,
+        bytes: &[u8],
+    ) -> Result<Vec<SseEvent>, SseParseError> {
+        let mut events = Vec::new();
+        for &b in bytes {
+            events.extend(parser.feed(&[b])?);
+        }
+        Ok(events)
+    }
+
+    #[test]
+    fn test_one_byte_chunks_preserve_multibyte_event_id_and_data() {
+        // Event type, id, and data all contain multibyte UTF-8 whose bytes
+        // are split across single-byte transport chunks. Nothing may be
+        // corrupted with U+FFFD.
+        let mut parser = SseParser::new();
+        let raw =
+            "event: café.updated\nid: naïve-42\ndata: {\"emoji\":\"🚀\",\"city\":\"東京\"}\n\n";
+        let events = feed_one_byte_at_a_time(&mut parser, raw.as_bytes()).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "café.updated");
+        assert_eq!(events[0].id, "naïve-42");
+        assert_eq!(events[0].data, "{\"emoji\":\"🚀\",\"city\":\"東京\"}");
+        assert!(!events[0].data.contains('\u{FFFD}'));
+        assert!(!events[0].id.contains('\u{FFFD}'));
+        assert!(!events[0].event_type.contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn test_one_byte_chunks_with_crlf() {
+        let mut parser = SseParser::new();
+        let raw = "event: café\r\nid: 7\r\ndata: 日本語\r\n\r\n";
+        let events = feed_one_byte_at_a_time(&mut parser, raw.as_bytes()).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "café");
+        assert_eq!(events[0].id, "7");
+        assert_eq!(events[0].data, "日本語");
+        assert!(!events[0].data.contains('\r'));
+    }
+
+    #[test]
+    fn test_partial_multibyte_across_chunk_boundary_is_not_corrupted() {
+        // Split the two bytes of 'é' (0xC3 0xA9) across two feed() calls.
+        let mut parser = SseParser::new();
+        assert!(parser.feed(b"data: caf").unwrap().is_empty());
+        assert!(parser.feed(&[0xC3]).unwrap().is_empty()); // lead byte only
+        assert!(parser.feed(&[0xA9]).unwrap().is_empty()); // continuation byte
+        let events = parser.feed(b"\n\n").unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data, "café");
+        assert!(!events[0].data.contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn test_invalid_utf8_in_complete_line_returns_controlled_error() {
+        // A lone 0xFF is never valid UTF-8. Once the line is complete
+        // (newline seen), strict decoding must surface a controlled error
+        // rather than a panic or replacement-character corruption.
+        let mut parser = SseParser::new();
+        let mut bytes = b"data: ".to_vec();
+        bytes.push(0xFF);
+        bytes.push(0xFE);
+        bytes.extend_from_slice(b"\n\n");
+        let err = parser.feed(&bytes).unwrap_err();
+        assert!(matches!(err, SseParseError::InvalidUtf8));
+    }
+
+    #[test]
+    fn test_invalid_utf8_one_byte_chunks_returns_controlled_error() {
+        let mut parser = SseParser::new();
+        assert!(parser.feed(b"d").unwrap().is_empty());
+        assert!(parser.feed(b"a").unwrap().is_empty());
+        assert!(parser.feed(b"t").unwrap().is_empty());
+        assert!(parser.feed(b"a").unwrap().is_empty());
+        assert!(parser.feed(b":").unwrap().is_empty());
+        assert!(parser.feed(b" ").unwrap().is_empty());
+        assert!(parser.feed(&[0x80]).unwrap().is_empty()); // stray continuation
+                                                           // Line still incomplete; error only fires once the line completes.
+        let err = parser.feed(b"\n").unwrap_err();
+        assert!(matches!(err, SseParseError::InvalidUtf8));
+    }
+
+    #[test]
+    fn test_large_chunk_with_individually_bounded_lines_is_accepted() {
+        let line = format!("ignored:{}\n", "x".repeat(MAX_LINE_BUFFER / 2));
+        let chunk = format!("{line}{line}");
+        assert!(chunk.len() > MAX_LINE_BUFFER);
+
+        let mut parser = SseParser::new();
+        assert!(parser.feed(chunk.as_bytes()).unwrap().is_empty());
+    }
+}
