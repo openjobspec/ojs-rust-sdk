@@ -2,11 +2,18 @@
 //!
 //! Split into cohesive actors, each in its own submodule:
 //!
-//! - `state` — the [`WorkerState`] lifecycle enum.
-//! - `context` — [`JobContext`], the per-job handler context, and its
-//!   heartbeat method.
+//! - `state` — the [`WorkerState`] lifecycle enum and the absorbing-`Terminate`
+//!   state machine shared between the main loop and the heartbeat task.
+//! - `context` — [`JobContext`], its heartbeat method, and its
+//!   durable-execution checkpoint save/get/delete methods.
 //! - `protocol` — worker protocol request/report helpers: per-job dispatch
 //!   and the `ack`/`nack` calls it makes.
+//! - `report` — the per-job terminal-reporting phase machine
+//!   (unclaimed / reporting-in-flight / completed) that makes ACK/NACK
+//!   exactly-once even when shutdown races an in-flight report.
+//! - `shutdown` — shutdown signal waiting, bounded awaiting of terminal
+//!   reports that were still in flight at grace expiry, and the single
+//!   forced NACK per job that remains unreported afterwards.
 //!
 //! [`WorkerBuilder`] and [`Worker`] itself (registration, middleware, and
 //! the fetch/dispatch main loop in [`Worker::start`]) remain here, as the
@@ -18,7 +25,7 @@ use crate::middleware::{BoxFuture, HandlerFn, HandlerResult, Middleware, Middlew
 #[cfg(feature = "reqwest-transport")]
 use crate::transport::HttpTransport;
 use crate::transport::{self, DynTransport};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,19 +34,49 @@ use tokio::task::JoinSet;
 
 mod context;
 mod protocol;
+mod report;
+mod shutdown;
 mod state;
 
 pub use context::JobContext;
 pub use state::WorkerState;
 
-use protocol::process_job;
+pub(crate) use report::ActiveJobState;
+
+type ActiveJobs = std::sync::Mutex<HashMap<String, Arc<ActiveJobState>>>;
+
+#[derive(Debug)]
+struct ActiveJobGuard {
+    job_id: String,
+    active_count: Arc<AtomicI64>,
+    active_jobs: Arc<ActiveJobs>,
+}
+
+impl ActiveJobGuard {
+    fn new(job_id: String, active_count: Arc<AtomicI64>, active_jobs: Arc<ActiveJobs>) -> Self {
+        Self {
+            job_id,
+            active_count,
+            active_jobs,
+        }
+    }
+}
+
+impl Drop for ActiveJobGuard {
+    fn drop(&mut self) {
+        self.active_count.fetch_sub(1, Ordering::SeqCst);
+        let mut jobs = self
+            .active_jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        jobs.remove(&self.job_id);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Worker builder
 // ---------------------------------------------------------------------------
 
-/// Builder for constructing an OJS [`Worker`].
-#[must_use = "builders do nothing until `.build()` is called"]
 pub struct WorkerBuilder {
     url: Option<String>,
     queues: Vec<String>,
@@ -109,6 +146,13 @@ impl WorkerBuilder {
     }
 
     /// Set the grace period for shutdown (time to wait for active jobs).
+    ///
+    /// After this period expires, handler execution is aborted, but any
+    /// ACK/NACK that was already in flight keeps running and is awaited
+    /// (bounded). Jobs that never started reporting -- and reports that
+    /// never settle, which are cancelled first -- receive exactly one forced
+    /// NACK. All forced-shutdown work shares one additional absolute
+    /// five-second deadline.
     pub fn grace_period(mut self, d: Duration) -> Self {
         self.grace_period = d;
         self
@@ -211,6 +255,8 @@ impl WorkerBuilder {
 
         let worker_id = generate_worker_id();
 
+        let (shutdown_tx, _) = tokio::sync::watch::channel(false);
+
         Ok(Worker {
             transport,
             worker_id,
@@ -224,11 +270,11 @@ impl WorkerBuilder {
             middleware: Arc::new(RwLock::new(MiddlewareChain::new())),
             state: Arc::new(AtomicU8::new(WorkerState::Running as u8)),
             active_count: Arc::new(AtomicI64::new(0)),
-            active_jobs: Arc::new(RwLock::new(HashSet::new())),
+            active_jobs: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            shutdown_tx,
         })
     }
 }
-
 // ---------------------------------------------------------------------------
 // Worker
 // ---------------------------------------------------------------------------
@@ -273,7 +319,11 @@ pub struct Worker {
     middleware: Arc<RwLock<MiddlewareChain>>,
     state: Arc<AtomicU8>,
     active_count: Arc<AtomicI64>,
-    active_jobs: Arc<RwLock<HashSet<String>>>,
+    active_jobs: Arc<ActiveJobs>,
+    /// Owned by the `Worker` (rather than a local variable inside `start()`)
+    /// so that `shutdown()` can be called from any task holding a reference
+    /// to this worker, independent of whichever call is running `start()`.
+    shutdown_tx: tokio::sync::watch::Sender<bool>,
 }
 
 impl std::fmt::Debug for Worker {
@@ -406,6 +456,41 @@ impl Worker {
         WorkerState::from_u8(self.state.load(Ordering::SeqCst))
     }
 
+    /// Attempt to transition the worker's lifecycle state.
+    ///
+    /// `Terminate` is an absorbing state: once set (locally, via
+    /// [`Worker::shutdown`], or by a server-directed heartbeat response),
+    /// no later transition -- local or server-directed -- can move the
+    /// worker back to `Quiet` or `Running`. Without this, a heartbeat
+    /// response that was already in flight when a local shutdown set
+    /// `Terminate` could land afterward and silently revert the state.
+    ///
+    /// Delegates to the `state` submodule's `transition_shared`, which is
+    /// also used directly (via a cloned `Arc<AtomicU8>`, no `&self`
+    /// required) by the detached heartbeat task below.
+    fn set_state(&self, new: WorkerState) {
+        state::transition_shared(&self.state, new);
+    }
+
+    /// Request a graceful shutdown from any task holding a reference to
+    /// this worker.
+    ///
+    /// Equivalent to the worker receiving a local Ctrl-C/SIGTERM: the fetch
+    /// loop stops taking new jobs, active jobs get up to `grace_period` to
+    /// finish. At grace expiry, terminal reporting is finalized before tasks
+    /// are aborted: in-flight ACK/NACKs are awaited (bounded), everything
+    /// still unreported afterwards gets exactly one forced NACK, and forced
+    /// reports plus task joins share one absolute five-second deadline.
+    /// Safe to call multiple times or
+    /// before `start()` has been called; safe to call from a different task
+    /// than the one running `start()` (e.g. a custom health check or admin
+    /// endpoint), typically via `Arc<Worker>`. The request is latched even if
+    /// no `start()` receiver exists yet, so a pre-start `shutdown()` still
+    /// prevents the worker from ever fetching jobs.
+    pub fn shutdown(&self) {
+        let _ = self.shutdown_tx.send_replace(true);
+    }
+
     /// Get the worker ID.
     pub fn id(&self) -> &str {
         &self.worker_id
@@ -416,6 +501,11 @@ impl Worker {
     /// This method blocks until the worker is shut down (via signal or
     /// context cancellation). It performs graceful shutdown: stops fetching
     /// new jobs and waits for active jobs to complete within the grace period.
+    /// If grace expires, handler execution is aborted while terminal reports
+    /// that were already in flight are allowed to finish (bounded);
+    /// later-resuming handlers cannot ACK/NACK after the forced
+    /// terminal-report claim, and blocking tasks cannot extend shutdown
+    /// beyond the shared forced-shutdown deadline.
     pub async fn start(&self) -> crate::Result<()> {
         tracing::info!(
             worker_id = %self.worker_id,
@@ -424,20 +514,21 @@ impl Worker {
             "worker starting"
         );
 
-        let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
 
-        // Spawn signal handler
-        let shutdown_tx_signal = shutdown_tx.clone();
-        tokio::spawn(async move {
-            let _ = tokio::signal::ctrl_c().await;
-            let _ = shutdown_tx_signal.send(true);
-        });
+        // Spawn signal handler: Ctrl-C (SIGINT) everywhere, plus SIGTERM on
+        // Unix (the standard shutdown signal from containers/Kubernetes).
+        let shutdown_tx_signal = self.shutdown_tx.clone();
+        let mut signal_handle = Some(tokio::spawn(async move {
+            shutdown::wait_for_shutdown_signal().await;
+            let _ = shutdown_tx_signal.send_replace(true);
+        }));
 
         // Semaphore for concurrency control
         let semaphore = Arc::new(tokio::sync::Semaphore::new(self.concurrency));
 
         // Spawn heartbeat loop
-        let heartbeat_handle = {
+        let mut heartbeat_handle = Some({
             let transport = self.transport.clone();
             let worker_id = self.worker_id.clone();
             let interval = self.heartbeat_interval;
@@ -452,7 +543,17 @@ impl Worker {
                 loop {
                     tokio::select! {
                         _ = ticker.tick() => {
-                            let jobs: Vec<String> = active_jobs.read().await.iter().cloned().collect();
+                            // Sort for deterministic wire ordering: a HashSet's
+                            // iteration order is unspecified and would
+                            // otherwise vary between heartbeats for the same
+                            // job set.
+                            let mut jobs: Vec<String> = active_jobs
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .keys()
+                                .cloned()
+                                .collect();
+                            jobs.sort_unstable();
                             let req = HeartbeatRequest {
                                 worker_id: worker_id.clone(),
                                 active_jobs: Some(jobs),
@@ -461,14 +562,18 @@ impl Worker {
 
                             match transport::transport_post::<_, HeartbeatResponse>(&transport, "/workers/heartbeat", &req).await {
                                 Ok(resp) => {
-                                    // Server can direct state changes
+                                    // Server can direct state changes. `set_state`
+                                    // makes `Terminate` absorbing so a heartbeat
+                                    // response that was already in flight when a
+                                    // local shutdown set `Terminate` cannot revert
+                                    // it back to `Quiet`/`Running`.
                                     match resp.state.as_str() {
                                         "quiet" => {
-                                            state.store(WorkerState::Quiet as u8, Ordering::SeqCst);
+                                            state::transition_shared(&state, WorkerState::Quiet);
                                             tracing::info!("server directed worker to quiet mode");
                                         }
                                         "terminate" => {
-                                            state.store(WorkerState::Terminate as u8, Ordering::SeqCst);
+                                            state::transition_shared(&state, WorkerState::Terminate);
                                             tracing::info!("server directed worker to terminate");
                                         }
                                         _ => {}
@@ -485,7 +590,7 @@ impl Worker {
                     }
                 }
             })
-        };
+        });
 
         // Main fetch loop
         let mut join_set = JoinSet::new();
@@ -493,8 +598,7 @@ impl Worker {
         loop {
             // Check for shutdown
             if *shutdown_rx.borrow() {
-                self.state
-                    .store(WorkerState::Terminate as u8, Ordering::SeqCst);
+                self.set_state(WorkerState::Terminate);
                 break;
             }
 
@@ -543,10 +647,14 @@ impl Worker {
                             Err(_) => break, // Semaphore closed — shutting down
                         };
                         let job_id = job.id.clone();
+                        let job_state = Arc::new(ActiveJobState::new());
 
                         // Track active job
                         self.active_count.fetch_add(1, Ordering::SeqCst);
-                        self.active_jobs.write().await.insert(job_id.clone());
+                        self.active_jobs
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .insert(job_id.clone(), job_state.clone());
 
                         let transport = self.transport.clone();
                         let worker_id = self.worker_id.clone();
@@ -556,19 +664,19 @@ impl Worker {
                         let active_jobs = self.active_jobs.clone();
 
                         join_set.spawn(async move {
-                            let result =
-                                process_job(&transport, &worker_id, &handlers, &middleware, job)
-                                    .await;
+                            let _permit = permit;
+                            let _active_job =
+                                ActiveJobGuard::new(job_id, active_count, active_jobs);
 
-                            // Cleanup
-                            active_count.fetch_sub(1, Ordering::SeqCst);
-                            {
-                                let mut jobs = active_jobs.write().await;
-                                jobs.remove(&job_id);
-                            }
-
-                            drop(permit);
-                            result
+                            protocol::process_job(
+                                &transport,
+                                &worker_id,
+                                &handlers,
+                                &middleware,
+                                job_state,
+                                job,
+                            )
+                            .await
                         });
                     }
                 }
@@ -583,9 +691,7 @@ impl Worker {
 
             // Reap completed tasks
             while let Some(result) = join_set.try_join_next() {
-                if let Err(e) = result {
-                    tracing::error!(error = %e, "job task panicked");
-                }
+                log_job_task_result(result, "job task failed");
             }
         }
 
@@ -593,6 +699,7 @@ impl Worker {
         tracing::info!("worker shutting down, waiting for active jobs...");
 
         let grace_deadline = tokio::time::Instant::now() + self.grace_period;
+        let mut grace_expired = false;
 
         loop {
             if self.active_count.load(Ordering::SeqCst) == 0 {
@@ -600,27 +707,132 @@ impl Worker {
             }
 
             if tokio::time::Instant::now() >= grace_deadline {
-                let remaining = self.active_count.load(Ordering::SeqCst);
+                grace_expired = true;
+                let remaining_jobs: Vec<(String, Arc<ActiveJobState>)> = self
+                    .active_jobs
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .iter()
+                    .map(|(job_id, state)| (job_id.clone(), state.clone()))
+                    .collect();
+                // One absolute budget shared by every piece of forced
+                // shutdown work, with an earlier sub-deadline reserved for
+                // terminal reports that were already in flight.
+                let shutdown_started = tokio::time::Instant::now();
+                let forced_deadline = shutdown_started + shutdown::FORCED_SHUTDOWN_TIMEOUT;
+                let report_deadline = shutdown_started + shutdown::IN_FLIGHT_REPORT_TIMEOUT;
+
+                // Decide every job's fate before aborting or awaiting any
+                // task: jobs that never started reporting are claimed here,
+                // so a handler that resumes after blocking/CPU work sees the
+                // claim and skips ACK/NACK, while jobs whose ACK/NACK is
+                // already in flight are left running and awaited below.
+                let plan = shutdown::plan_terminal_reports(remaining_jobs);
                 tracing::warn!(
-                    remaining_jobs = remaining,
-                    "grace period expired, abandoning remaining jobs"
+                    forced_jobs = plan.forced.len(),
+                    in_flight_reports = plan.in_flight.len(),
+                    already_reported = plan.already_reported,
+                    report_deadline_ms = shutdown::IN_FLIGHT_REPORT_TIMEOUT.as_millis() as u64,
+                    deadline_ms = shutdown::FORCED_SHUTDOWN_TIMEOUT.as_millis() as u64,
+                    "grace period expired, finalizing terminal reports within the forced-shutdown deadline"
                 );
+
+                // Start forced releases and the bounded wait for in-flight
+                // reports immediately, before any task termination is awaited.
+                let transport = self.transport.clone();
+                let forced_nack_handle = tokio::spawn(async move {
+                    shutdown::finish_terminal_reports(
+                        transport,
+                        plan,
+                        report_deadline,
+                        forced_deadline,
+                    )
+                    .await;
+                });
+
+                if let Some(handle) = heartbeat_handle.as_ref() {
+                    handle.abort();
+                }
+                if let Some(handle) = signal_handle.as_ref() {
+                    handle.abort();
+                }
+                join_set.abort_all();
+
+                // Poll all cleanup work concurrently, but never beyond the
+                // same absolute deadline used by every forced NACK request.
+                // In particular, an aborted async task stuck in CPU-bound or
+                // blocking code is not awaited indefinitely.
+                let cleanup = async {
+                    let drain_jobs = async {
+                        while let Some(result) = join_set.join_next().await {
+                            log_job_task_result(result, "job task cancelled after grace expiry");
+                        }
+                    };
+                    let wait_heartbeat = async {
+                        if let Some(handle) = heartbeat_handle.take() {
+                            let _ = handle.await;
+                        }
+                    };
+                    let wait_signal = async {
+                        if let Some(handle) = signal_handle.take() {
+                            let _ = handle.await;
+                        }
+                    };
+                    let wait_forced_nacks = async {
+                        if let Err(error) = forced_nack_handle.await {
+                            tracing::warn!(%error, "forced nack task failed");
+                        }
+                    };
+
+                    tokio::join!(drain_jobs, wait_heartbeat, wait_signal, wait_forced_nacks);
+                };
+
+                if tokio::time::timeout_at(forced_deadline, cleanup)
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!(
+                        "forced-shutdown deadline elapsed before all aborted tasks terminated"
+                    );
+                }
                 break;
             }
 
             // Reap completed tasks
             tokio::select! {
                 result = join_set.join_next() => {
-                    if let Some(Err(e)) = result {
-                        tracing::error!(error = %e, "job task panicked during shutdown");
+                    if let Some(result) = result {
+                        log_job_task_result(result, "job task failed during shutdown");
                     }
                 }
                 _ = tokio::time::sleep(Duration::from_millis(100)) => {}
             }
         }
 
-        heartbeat_handle.abort();
-        let _ = shutdown_tx.send(true);
+        if grace_expired {
+            let _ = self.shutdown_tx.send_replace(true);
+            tracing::info!(worker_id = %self.worker_id, "worker stopped");
+            return Ok(());
+        }
+
+        if !grace_expired {
+            if let Some(handle) = heartbeat_handle.as_ref() {
+                handle.abort();
+            }
+            if let Some(handle) = signal_handle.as_ref() {
+                handle.abort();
+            }
+        }
+        while let Some(result) = join_set.join_next().await {
+            log_job_task_result(result, "job task completed during final shutdown drain");
+        }
+        if let Some(handle) = heartbeat_handle.take() {
+            let _ = handle.await;
+        }
+        if let Some(handle) = signal_handle.take() {
+            let _ = handle.await;
+        }
+        let _ = self.shutdown_tx.send_replace(true);
 
         tracing::info!(worker_id = %self.worker_id, "worker stopped");
         Ok(())
@@ -650,4 +862,17 @@ impl Worker {
 
 fn generate_worker_id() -> String {
     format!("worker_{}", uuid::Uuid::now_v7())
+}
+
+fn log_job_task_result(result: Result<crate::Result<()>, tokio::task::JoinError>, message: &str) {
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, "{message}");
+        }
+        Err(e) if e.is_cancelled() => {}
+        Err(e) => {
+            tracing::error!(error = %e, "{message}");
+        }
+    }
 }

@@ -1,4 +1,7 @@
-//! Worker lifecycle state: the [`WorkerState`] enum.
+//! Worker lifecycle state: the [`WorkerState`] enum and the small state
+//! machine enforcing that `Terminate` is an absorbing transition.
+
+use std::sync::atomic::{AtomicU8, Ordering};
 
 /// The lifecycle state of a worker.
 #[non_exhaustive]
@@ -34,5 +37,30 @@ impl WorkerState {
 impl std::fmt::Display for WorkerState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.as_str())
+    }
+}
+
+/// Attempt to transition the worker's shared lifecycle state to `new`.
+///
+/// `Terminate` is an absorbing state: once set (locally, via
+/// [`crate::worker::Worker::shutdown`], or by a server-directed heartbeat
+/// response), no later transition -- local or server-directed -- can move
+/// the worker back to `Quiet` or `Running`. Without this, a heartbeat
+/// response that was already in flight when a local shutdown set
+/// `Terminate` could land afterward and silently revert the state.
+///
+/// Usable both from a method holding `&Worker` and from the detached
+/// heartbeat task, which only holds a cloned `Arc<AtomicU8>` rather than
+/// `&self`.
+pub(crate) fn transition_shared(state: &AtomicU8, new: WorkerState) {
+    let mut current = state.load(Ordering::SeqCst);
+    loop {
+        if current == WorkerState::Terminate as u8 {
+            return;
+        }
+        match state.compare_exchange_weak(current, new as u8, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return,
+            Err(actual) => current = actual,
+        }
     }
 }
