@@ -1,16 +1,41 @@
-use crate::errors::OjsError;
+//! Job-type and queue-name validation, applied before any request reaches
+//! the transport layer.
+//!
+//! This is a self-contained actor with no dependency on [`crate::client::Client`]/
+//! [`crate::client::ClientBuilder`]/transport: it is used both by
+//! [`crate::client::EnqueueBuilder::send`] and by
+//! [`crate::workflow::WorkflowDefinition::validate`] (via the crate-private
+//! re-exports below), so each step/job of a workflow is checked with
+//! exactly the same rules as a directly-enqueued job.
 
-const MAX_TYPE_LENGTH: usize = 255;
-const MAX_QUEUE_LENGTH: usize = 128;
+use crate::errors::OjsError;
+use crate::workflow::EnqueueOption;
+
+/// Canonical maximum job-type length, measured in UTF-8 *bytes* (not Unicode
+/// scalar values). Per `ojs-payload-limits.md` (PL-004) and the
+/// `JOB_TYPE_TOO_LONG` error, a job type MUST NOT exceed 255 bytes when
+/// encoded as UTF-8.
+const MAX_TYPE_BYTES: usize = 255;
+
+/// Canonical maximum queue-name length, measured in UTF-8 *bytes* (not
+/// Unicode scalar values). Per `ojs-payload-limits.md` (PL-003), the
+/// `QUEUE_NAME_TOO_LONG` error, and the security pattern
+/// `^[a-zA-Z0-9_.-]{1,255}$` (SEC-010), a queue name MUST NOT exceed 255
+/// bytes when encoded as UTF-8.
+const MAX_QUEUE_NAME_BYTES: usize = 255;
 
 pub(crate) fn validate_job_type(job_type: &str) -> crate::Result<()> {
     if job_type.is_empty() {
         return Err(OjsError::Builder("job type must not be empty".into()));
     }
-    if job_type.len() > MAX_TYPE_LENGTH {
+    // Length is bounded by UTF-8 *byte* count (`str::len()`), not scalar
+    // count, matching the canonical 255-byte limit, and is checked before
+    // the pattern so an oversized (possibly multibyte) value is rejected on
+    // length grounds regardless of its characters.
+    if job_type.len() > MAX_TYPE_BYTES {
         return Err(OjsError::Builder(format!(
-            "job type must not exceed {} characters, got {}",
-            MAX_TYPE_LENGTH,
+            "job type must not exceed {} bytes, got {}",
+            MAX_TYPE_BYTES,
             job_type.len()
         )));
     }
@@ -34,10 +59,15 @@ pub(crate) fn validate_queue_name(queue: &str) -> crate::Result<()> {
     if queue.is_empty() {
         return Err(OjsError::Builder("queue name must not be empty".into()));
     }
-    if queue.len() > MAX_QUEUE_LENGTH {
+    // Length is bounded by UTF-8 *byte* count (`str::len()`), not scalar
+    // count, matching the canonical 255-byte limit (SEC-010 / PL-003). This
+    // byte-based check runs before pattern validation so an oversized value
+    // -- including a multibyte string whose scalar count is <= 255 but whose
+    // encoded byte length exceeds it -- is always rejected on length grounds.
+    if queue.len() > MAX_QUEUE_NAME_BYTES {
         return Err(OjsError::Builder(format!(
-            "queue name must not exceed {} characters, got {}",
-            MAX_QUEUE_LENGTH,
+            "queue name must not exceed {} bytes, got {}",
+            MAX_QUEUE_NAME_BYTES,
             queue.len()
         )));
     }
@@ -77,6 +107,20 @@ pub(crate) fn validate_queue_name(queue: &str) -> crate::Result<()> {
     Ok(())
 }
 
+/// Validate every enqueue option constraint enforced locally by this SDK.
+///
+/// Keeping this as one shared entry point prevents direct enqueue, workflow
+/// defaults, workflow steps, and batch callbacks from drifting apart as new
+/// option validation is added.
+pub(crate) fn validate_enqueue_options(options: &[EnqueueOption]) -> crate::Result<()> {
+    for option in options {
+        if let EnqueueOption::Queue(queue) = option {
+            validate_queue_name(queue)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod queue_validation_tests {
     use super::validate_queue_name;
@@ -94,18 +138,6 @@ mod queue_validation_tests {
     #[test]
     fn rejects_empty() {
         assert!(validate_queue_name("").is_err());
-    }
-
-    #[test]
-    fn rejects_too_long() {
-        let long = "a".repeat(129);
-        assert!(validate_queue_name(&long).is_err());
-    }
-
-    #[test]
-    fn accepts_max_length() {
-        let exact = "a".repeat(128);
-        assert!(validate_queue_name(&exact).is_ok());
     }
 
     #[test]

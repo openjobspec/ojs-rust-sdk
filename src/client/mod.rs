@@ -15,8 +15,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Job-type/queue-name validation, applied before any request reaches the
+/// transport layer. Self-contained: shared by [`EnqueueBuilder::send`] and,
+/// via the crate-private re-export below, by
+/// [`crate::workflow::WorkflowDefinition::validate`].
 mod validation;
-use validation::{validate_job_type, validate_queue_name};
+pub(crate) use validation::{validate_enqueue_options, validate_job_type};
 
 /// Percent-encode a string for use in URL path segments or query values.
 fn url_encode(s: &str) -> String {
@@ -291,6 +295,7 @@ impl Client {
 
     /// Create a workflow.
     pub async fn create_workflow(&self, def: WorkflowDefinition) -> crate::Result<Workflow> {
+        def.validate()?;
         let wire = def.to_wire();
         transport::transport_post(&self.transport, "/workflows", &wire).await
     }
@@ -537,11 +542,7 @@ impl EnqueueBuilder {
     /// Send the enqueue request.
     pub async fn send(self) -> crate::Result<Job> {
         validate_job_type(&self.job_type)?;
-        for opt in &self.options {
-            if let EnqueueOption::Queue(ref q) = opt {
-                validate_queue_name(q)?;
-            }
-        }
+        validate_enqueue_options(&self.options)?;
 
         let args = crate::workflow::normalize_args(&self.args);
         let options_wire = crate::workflow::resolve_options(&self.options);

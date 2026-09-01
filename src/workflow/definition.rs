@@ -258,6 +258,52 @@ impl WorkflowDefinition {
         self
     }
 
+    /// Validate the definition before it is sent to the server.
+    pub(crate) fn validate(&self) -> crate::Result<()> {
+        if self.steps.is_empty() {
+            return Err(crate::OjsError::Builder(
+                "workflow must contain at least one step or job".to_string(),
+            ));
+        }
+
+        // Defaults are materialized into every step on the wire, so validate
+        // them first even if an individual step overrides the same option.
+        // Otherwise an invalid workflow-level default could escape local
+        // validation depending on which steps happen to override it.
+        crate::client::validate_enqueue_options(&self.options)?;
+
+        let validate_step = |step: &Step| -> crate::Result<()> {
+            crate::client::validate_job_type(&step.job_type)?;
+            crate::client::validate_enqueue_options(&step.options)
+        };
+
+        for step in &self.steps {
+            validate_step(step)?;
+        }
+
+        if self.workflow_type == WorkflowType::Batch {
+            let callbacks = self.callbacks.as_ref().ok_or_else(|| {
+                crate::OjsError::Builder(
+                    "batch workflow must define at least one callback".to_string(),
+                )
+            })?;
+            let callback_steps = [
+                callbacks.on_complete.as_ref(),
+                callbacks.on_success.as_ref(),
+                callbacks.on_failure.as_ref(),
+            ];
+            if callback_steps.iter().all(Option::is_none) {
+                return Err(crate::OjsError::Builder(
+                    "batch workflow must define at least one callback".to_string(),
+                ));
+            }
+            for callback in callback_steps.into_iter().flatten() {
+                validate_step(callback)?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Normalize args into wire format (JSON array).
