@@ -152,6 +152,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "reqwest-transport")]
     fn test_backoff_respects_retry_after() {
         let config = RetryConfig::default();
         let delay = config.compute_backoff(0, Some(Duration::from_secs(5)));
@@ -159,6 +160,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "reqwest-transport")]
     fn test_backoff_clamps_retry_after_to_max() {
         let config = RetryConfig::default().with_max_backoff(Duration::from_secs(10));
         let delay = config.compute_backoff(0, Some(Duration::from_secs(60)));
@@ -166,23 +168,25 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "reqwest-transport")]
     fn test_exponential_backoff_range() {
         let config = RetryConfig::default()
-            .with_min_backoff(Duration::from_millis(1000))
+            .with_min_backoff(Duration::from_secs(1))
             .with_max_backoff(Duration::from_secs(30));
 
         // attempt 0: base=1000ms, range=[500, 1000]
         let delay = config.compute_backoff(0, None);
         assert!(delay >= Duration::from_millis(500));
-        assert!(delay <= Duration::from_millis(1000));
+        assert!(delay <= Duration::from_secs(1));
 
         // attempt 1: base=2000ms, range=[1000, 2000]
         let delay = config.compute_backoff(1, None);
-        assert!(delay >= Duration::from_millis(1000));
-        assert!(delay <= Duration::from_millis(2000));
+        assert!(delay >= Duration::from_secs(1));
+        assert!(delay <= Duration::from_secs(2));
     }
 
     #[test]
+    #[cfg(feature = "reqwest-transport")]
     fn test_backoff_clamped_to_max() {
         let config = RetryConfig::default()
             .with_min_backoff(Duration::from_secs(1))
