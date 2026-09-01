@@ -155,6 +155,69 @@ impl WorkflowStepStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_workflow_response_wrapper_unwraps() {
+        let raw = json!({
+            "workflow": {
+                "id": "wf-1",
+                "name": "order-processing",
+                "type": "chain",
+                "state": "running",
+                "created_at": "2026-02-12T10:30:00Z",
+                "steps": [
+                    {
+                        "id": "0",
+                        "type": "order.validate",
+                        "state": "completed",
+                        "job_id": "job-1",
+                        "started_at": "2026-02-12T10:30:01Z",
+                        "completed_at": "2026-02-12T10:30:02Z",
+                        "result": {"valid": true}
+                    },
+                    {
+                        "type": "payment.charge",
+                        "state": "waiting"
+                    }
+                ]
+            }
+        });
+
+        let resp: WorkflowResponseWire = serde_json::from_value(raw).unwrap();
+        let wf = resp.workflow;
+        assert_eq!(wf.id, "wf-1");
+        assert_eq!(wf.name.as_deref(), Some("order-processing"));
+        assert_eq!(wf.workflow_type, Some(WorkflowType::Chain));
+        assert_eq!(wf.state, WorkflowState::Running);
+        assert_eq!(wf.steps.len(), 2);
+        assert_eq!(wf.steps[0].id, "0");
+        assert!(wf.steps[1].id.is_empty());
+        assert_eq!(wf.steps[0].job_state(), Some(crate::JobState::Completed));
+        assert_eq!(wf.steps[1].job_id, None);
+        assert_eq!(wf.steps[1].job_state(), None); // "waiting" has no JobState equivalent
+    }
+
+    #[test]
+    fn test_workflow_cancel_response_shape() {
+        // Cancel responses carry a smaller field set (no `steps`); this
+        // must decode without requiring fields the cancel response omits.
+        let raw = json!({
+            "workflow": {
+                "id": "wf-1",
+                "state": "cancelled",
+                "cancelled_at": "2026-02-12T10:35:00Z",
+                "steps_cancelled": 2,
+                "steps_already_completed": 1
+            }
+        });
+        let resp: WorkflowResponseWire = serde_json::from_value(raw).unwrap();
+        assert_eq!(resp.workflow.state, WorkflowState::Cancelled);
+        assert!(resp.workflow.cancelled_at.is_some());
+        assert_eq!(resp.workflow.steps_cancelled, Some(2));
+        assert_eq!(resp.workflow.steps_already_complete, Some(1));
+        assert!(resp.workflow.steps.is_empty());
+    }
 
     #[test]
     fn test_workflow_step_status_job_state() {

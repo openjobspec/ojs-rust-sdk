@@ -7,7 +7,7 @@
 
 use ojs::{Client, JobRequest, OjsError, RetryConfig, RetryPolicy};
 use serde_json::json;
-use wiremock::matchers::{header, method, path};
+use wiremock::matchers::{body_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const OJS_CONTENT_TYPE: &str = "application/openjobspec+json";
@@ -530,16 +530,30 @@ async fn test_pause_resume_queue() {
 async fn test_create_workflow() {
     let server = MockServer::start().await;
 
+    // Per ojs-workflows.md §11.1 / the shared OJS Go backend, the response
+    // wraps the workflow in a top-level "workflow" object, and chain steps
+    // are keyed by array position (no client-invented "depends_on" edges).
     Mock::given(method("POST"))
         .and(path("/ojs/v1/workflows"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
-            "id": "wf-001",
+        .and(body_json(json!({
+            "type": "chain",
             "name": "ETL Pipeline",
-            "state": "pending",
             "steps": [
-                {"id": "step-0", "type": "fetch", "state": "pending", "depends_on": []},
-                {"id": "step-1", "type": "transform", "state": "pending", "depends_on": ["step-0"]}
+                {"type": "fetch", "args": [{}]},
+                {"type": "transform", "args": [{}]}
             ]
+        })))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "workflow": {
+                "id": "wf-001",
+                "name": "ETL Pipeline",
+                "type": "chain",
+                "state": "running",
+                "steps": [
+                    {"id": "0", "type": "fetch", "state": "pending"},
+                    {"id": "1", "type": "transform", "state": "waiting"}
+                ]
+            }
         })))
         .expect(1)
         .mount(&server)
@@ -559,7 +573,7 @@ async fn test_create_workflow() {
         .unwrap();
 
     assert_eq!(workflow.id, "wf-001");
-    assert_eq!(workflow.state, ojs::WorkflowState::Pending);
+    assert_eq!(workflow.state, ojs::WorkflowState::Running);
     assert_eq!(workflow.steps.len(), 2);
 }
 

@@ -98,3 +98,115 @@ pub(crate) struct WorkflowCallbacksWire {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub on_failure: Option<WorkflowJobWire>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::definition::{batch, chain, group, BatchCallbacks, EnqueueOption, Step};
+    use serde_json::json;
+
+    #[test]
+    fn test_chain_wire_format() {
+        let def = chain(vec![
+            Step::new("fetch", json!({"url": "https://example.com"})),
+            Step::new("transform", json!({"format": "csv"})),
+            Step::new("notify", json!({"channel": "slack"})),
+        ]);
+
+        let wire = def.to_wire();
+        let value = serde_json::to_value(&wire).unwrap();
+
+        // Discriminated union per workflow.schema.json / the shared Go
+        // backend: root `type` + `steps`, no `jobs`/`callbacks`, no
+        // synthetic per-step `id`/`depends_on`, and no root `options`.
+        assert_eq!(value["type"], "chain");
+        assert!(value.get("jobs").is_none());
+        assert!(value.get("callbacks").is_none());
+        let steps = value["steps"].as_array().unwrap();
+        assert_eq!(steps.len(), 3);
+        for step in steps {
+            assert!(step.get("id").is_none());
+            assert!(step.get("depends_on").is_none());
+        }
+        assert_eq!(steps[0]["type"], "fetch");
+        assert_eq!(steps[1]["type"], "transform");
+        assert_eq!(steps[2]["type"], "notify");
+    }
+
+    #[test]
+    fn test_group_wire_format() {
+        let def = group(vec![
+            Step::new("export.csv", json!({})),
+            Step::new("export.pdf", json!({})),
+        ]);
+
+        let wire = def.to_wire();
+        let value = serde_json::to_value(&wire).unwrap();
+
+        assert_eq!(value["type"], "group");
+        assert!(value.get("steps").is_none());
+        assert!(value.get("callbacks").is_none());
+        let jobs = value["jobs"].as_array().unwrap();
+        assert_eq!(jobs.len(), 2);
+        assert_eq!(jobs[0]["type"], "export.csv");
+        assert_eq!(jobs[1]["type"], "export.pdf");
+    }
+
+    #[test]
+    fn test_batch_wire_format() {
+        let def = batch(
+            BatchCallbacks::new().on_complete(Step::new("report", json!({}))),
+            vec![
+                Step::new("email.send", json!({"to": "a@b.com"})),
+                Step::new("email.send", json!({"to": "c@d.com"})),
+            ],
+        );
+
+        let wire = def.to_wire();
+        let value = serde_json::to_value(&wire).unwrap();
+
+        assert_eq!(value["type"], "batch");
+        assert!(value.get("steps").is_none());
+        let jobs = value["jobs"].as_array().unwrap();
+        assert_eq!(jobs.len(), 2); // callbacks are NOT folded into `jobs`
+        assert_eq!(value["callbacks"]["on_complete"]["type"], "report");
+        assert!(value["callbacks"].get("on_success").is_none());
+        assert!(value["callbacks"].get("on_failure").is_none());
+    }
+
+    #[test]
+    fn test_batch_requires_at_least_one_callback_field_present() {
+        // `callbacks` itself must be present with only the configured
+        // hooks; unset hooks must be omitted rather than emitted as `null`.
+        let def = batch(
+            BatchCallbacks::new()
+                .on_success(Step::new("celebrate", json!({})))
+                .on_failure(Step::new("alert", json!({}))),
+            vec![Step::new("job.run", json!({}))],
+        );
+        let value = serde_json::to_value(def.to_wire()).unwrap();
+        assert!(value["callbacks"].get("on_complete").is_none());
+        assert_eq!(value["callbacks"]["on_success"]["type"], "celebrate");
+        assert_eq!(value["callbacks"]["on_failure"]["type"], "alert");
+    }
+
+    #[test]
+    fn test_workflow_level_default_options_materialize_into_each_job() {
+        let def = chain(vec![
+            Step::new("fetch", json!({})),
+            Step::new("transform", json!({})).queue("fast-lane"),
+        ])
+        .with_option(EnqueueOption::Queue("default-queue".into()))
+        .with_option(EnqueueOption::Priority(5));
+
+        let value = serde_json::to_value(def.to_wire()).unwrap();
+        let steps = value["steps"].as_array().unwrap();
+
+        // Step 0 has no per-step override: inherits both workflow defaults.
+        assert_eq!(steps[0]["options"]["queue"], "default-queue");
+        assert_eq!(steps[0]["options"]["priority"], 5);
+
+        // Step 1 overrides `queue` but still inherits `priority`.
+        assert_eq!(steps[1]["options"]["queue"], "fast-lane");
+        assert_eq!(steps[1]["options"]["priority"], 5);
+    }
+}

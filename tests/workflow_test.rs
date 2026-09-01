@@ -186,8 +186,36 @@ fn test_workflow_deserialize() {
     assert_eq!(wf.id, "wf_01234");
     assert_eq!(wf.state, WorkflowState::Running);
     assert_eq!(wf.steps.len(), 2);
+    assert_eq!(wf.steps[0].id, "step-0");
     assert_eq!(wf.steps[0].job_type, "step1");
     assert_eq!(wf.steps[1].state, "active");
+}
+
+#[test]
+fn test_workflow_cancel_response_preserves_legacy_public_fields() {
+    let wf: Workflow = serde_json::from_value(json!({
+        "id": "wf_cancelled",
+        "state": "cancelled",
+        "steps_cancelled": 3,
+        "steps_already_completed": 2
+    }))
+    .unwrap();
+
+    assert_eq!(wf.steps_cancelled, Some(3));
+    assert_eq!(wf.steps_already_complete, Some(2));
+}
+
+#[test]
+fn test_workflow_step_status_preserves_legacy_fields() {
+    let step: WorkflowStepStatus = serde_json::from_value(json!({
+        "type": "step1",
+        "state": "waiting",
+        "depends_on": ["step-0"]
+    }))
+    .unwrap();
+
+    assert!(step.id.is_empty());
+    assert_eq!(step.depends_on, vec!["step-0"]);
 }
 
 #[test]
