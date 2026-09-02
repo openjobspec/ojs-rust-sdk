@@ -175,4 +175,30 @@ mod tests {
         r.reset();
         assert!(r.is_empty());
     }
+
+    #[test]
+    fn test_days_to_date_known_dates() {
+        // Independently computed (days-since-epoch, year, month, day)
+        // tuples (via Python's `datetime.date` arithmetic against
+        // 1970-01-01), pinning the civil-calendar conversion against a
+        // regression: the previous test coverage only checked "not epoch"
+        // and "ends with Z", which would not catch an off-by-one in this
+        // algorithm.
+        let cases: &[(u64, u64, u64, u64)] = &[
+            (0, 1970, 1, 1),
+            (10_957, 2000, 1, 1),
+            // A leap-day date, to pin leap-year handling specifically.
+            (19_782, 2024, 2, 29),
+            (19_722, 2023, 12, 31),
+            (20_254, 2025, 6, 15),
+        ];
+
+        for &(days, year, month, day) in cases {
+            assert_eq!(
+                days_to_date(days),
+                (year, month, day),
+                "days_to_date({days}) mismatch"
+            );
+        }
+    }
 }
