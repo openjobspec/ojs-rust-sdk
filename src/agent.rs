@@ -277,6 +277,35 @@ mod tests {
         assert!(json.contains("ours"));
     }
 
+    #[test]
+    fn test_debug_never_leaks_auth_token() {
+        let client = AgentClient::new("https://ojs.example.com")
+            .unwrap()
+            .auth_token("super-secret-token-value");
+        let dbg = format!("{client:?}");
+        // The secret token value must never appear in Debug output.
+        assert!(
+            !dbg.contains("super-secret-token-value"),
+            "Debug output leaked the auth token: {dbg}"
+        );
+        // Safe/useful fields and presence metadata must be present.
+        assert!(dbg.contains("AgentClient"));
+        assert!(dbg.contains("https://ojs.example.com"));
+        assert!(dbg.contains("base_url"));
+        assert!(dbg.contains("<redacted>"));
+    }
+
+    #[test]
+    fn test_debug_shows_absent_token_as_none() {
+        let client = AgentClient::new("https://ojs.example.com").unwrap();
+        let dbg = format!("{client:?}");
+        assert!(
+            dbg.contains("None"),
+            "expected None for absent token: {dbg}"
+        );
+        assert!(!dbg.contains("<redacted>"));
+    }
+
     #[tokio::test]
     async fn test_auth_token_sent_as_bearer_header() {
         use wiremock::matchers::{header, method, path};

@@ -254,6 +254,35 @@ mod tests {
     }
 
     #[test]
+    fn test_pqc_attestor_honestly_fails_verify_even_with_a_quote() {
+        // A structurally well-formed receipt (with a quote) must still be
+        // rejected: without real signing there is nothing to check the
+        // signature against, so accepting it would be trust theater. This
+        // replaces the previous structure-only check, which accepted any
+        // receipt as long as it merely included a quote.
+        let a = PqcOnlyAttestor::new("key-1");
+        let receipt = Receipt {
+            job_id: "test".into(),
+            quote: Some(Quote {
+                quote_type: quote_type::PQC_ONLY.to_string(),
+                evidence: vec![1, 2, 3],
+                nonce: "deadbeef".into(),
+                issued_at: "2024-01-01T00:00:00Z".into(),
+            }),
+            jurisdiction: None,
+            model_fingerprint: None,
+            signature: Signature {
+                algorithm: algorithm::ED25519.into(),
+                value: String::new(),
+                key_id: "key-1".into(),
+            },
+            issued_at: "2024-01-01T00:00:00Z".into(),
+        };
+        let err = a.verify(&receipt).unwrap_err();
+        assert!(matches!(err, AttestError::VerificationFailed(_)));
+    }
+
+    #[test]
     fn test_verify_no_quote() {
         let a = PqcOnlyAttestor::new("key-1");
         let receipt = Receipt {

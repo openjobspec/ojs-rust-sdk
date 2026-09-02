@@ -33,6 +33,32 @@ fn test_client_builder_with_all_options() {
 }
 
 #[test]
+fn test_client_debug_does_not_recursively_leak_auth_token() {
+    // `Client` derives `Debug` and holds a `DynTransport`. The default
+    // `HttpTransport` must redact its bearer token so `format!("{client:?}")`
+    // cannot leak it through the transport chain.
+    let client = Client::builder()
+        .url("http://localhost:8080")
+        .auth_token("recursive-leak-token")
+        .header("X-Api-Key", "recursive-header-secret")
+        .build()
+        .unwrap();
+    let dbg = format!("{client:?}");
+    assert!(
+        !dbg.contains("recursive-leak-token"),
+        "Client Debug recursively leaked the auth token: {dbg}"
+    );
+    assert!(
+        !dbg.contains("recursive-header-secret"),
+        "Client Debug recursively leaked a header value: {dbg}"
+    );
+    assert!(
+        dbg.contains("<redacted>"),
+        "expected redaction marker: {dbg}"
+    );
+}
+
+#[test]
 fn test_job_request_creation() {
     let req = JobRequest::new("email.send", json!({"to": "user@example.com"}));
     assert_eq!(req.job_type, "email.send");

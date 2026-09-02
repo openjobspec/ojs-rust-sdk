@@ -443,6 +443,37 @@ mod tests {
     }
 
     #[test]
+    fn test_codec_encrypt_rejects_short_key_without_panicking() {
+        let codec = EncryptionCodec::new();
+        // A plausible operator mistake: a short human-readable "key" that
+        // was never hex/base64-decoded into 32 raw bytes. This must return
+        // an error, not panic (previously `Key::from_slice` would panic).
+        let short_key = b"too-short";
+        let result = codec.encrypt(b"secret data", short_key);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("32"));
+    }
+
+    #[test]
+    fn test_codec_encrypt_rejects_long_key_without_panicking() {
+        let codec = EncryptionCodec::new();
+        let long_key = [0u8; 64];
+        let result = codec.encrypt(b"secret data", &long_key);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_codec_decrypt_rejects_wrong_length_key_without_panicking() {
+        let codec = EncryptionCodec::new();
+        let key32 = b"0123456789abcdef0123456789abcdef";
+        let encrypted = codec.encrypt(b"secret data", key32).unwrap();
+
+        let short_key = b"too-short";
+        let result = codec.decrypt(&encrypted, short_key);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_codec_decrypt_wrong_key() {
         let codec = EncryptionCodec::new();
         let key1 = b"0123456789abcdef0123456789abcdef";

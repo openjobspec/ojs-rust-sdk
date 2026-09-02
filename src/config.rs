@@ -95,3 +95,29 @@ impl ConnectionConfig {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_never_leaks_auth_token_or_header_values() {
+        let config = ConnectionConfig::new("http://localhost:8080")
+            .auth_token("super-secret-connection-token")
+            .header("X-Api-Key", "header-api-key-secret");
+        let dbg = format!("{config:?}");
+        assert!(
+            !dbg.contains("super-secret-connection-token"),
+            "Debug leaked auth token: {dbg}"
+        );
+        assert!(
+            !dbg.contains("header-api-key-secret"),
+            "Debug leaked header value: {dbg}"
+        );
+        // Safe/useful fields and presence metadata.
+        assert!(dbg.contains("ConnectionConfig"));
+        assert!(dbg.contains("http://localhost:8080"));
+        assert!(dbg.contains("<redacted>"));
+        assert!(dbg.contains("X-Api-Key"));
+    }
+}

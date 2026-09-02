@@ -306,3 +306,37 @@ fn parse_rate_limit_headers(
     })
 }
 
+#[cfg(test)]
+mod debug_redaction_tests {
+    use super::*;
+
+    #[test]
+    fn debug_redacts_auth_token_and_header_values() {
+        let mut headers = HashMap::new();
+        headers.insert("X-Api-Key".to_string(), "api-key-super-secret".to_string());
+        let transport = HttpTransport::new(
+            "https://ojs.example.com",
+            TransportConfig {
+                auth_token: Some("bearer-secret-token".to_string()),
+                headers,
+                ..Default::default()
+            },
+        );
+        let dbg = format!("{transport:?}");
+        // Neither the bearer token nor any header value may be rendered.
+        assert!(
+            !dbg.contains("bearer-secret-token"),
+            "Debug leaked auth token: {dbg}"
+        );
+        assert!(
+            !dbg.contains("api-key-super-secret"),
+            "Debug leaked header value: {dbg}"
+        );
+        // Safe/useful fields must be present: base URL, token presence, and
+        // header *names* (not values).
+        assert!(dbg.contains("HttpTransport"));
+        assert!(dbg.contains("https://ojs.example.com"));
+        assert!(dbg.contains("<redacted>"));
+        assert!(dbg.contains("X-Api-Key"));
+    }
+}
