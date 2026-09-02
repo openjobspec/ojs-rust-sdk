@@ -33,7 +33,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use opentelemetry::metrics::{Counter, Histogram, Meter};
-use opentelemetry::trace::{SpanKind, Status, TraceContextExt, Tracer};
+use opentelemetry::trace::{FutureExt, SpanKind, Status, TraceContextExt, Tracer};
 use opentelemetry::{global, Context, KeyValue};
 
 use crate::middleware::{BoxFuture, HandlerResult, Middleware, Next};
@@ -92,7 +92,17 @@ impl Middleware for OtelTracingMiddleware {
         let cx = Context::current_with_span(span);
 
         Box::pin(async move {
-            let result = next.run(ctx).await;
+            // `Context::current_with_span` only builds a `Context` value;
+            // it does not make it the ambient "current" context on its
+            // own. Without explicitly attaching it for the duration of the
+            // handler, any child span the handler creates (directly via
+            // `opentelemetry`, or via the `tracing`-bridge) would not be
+            // parented to this job-processing span at all. `with_context`
+            // re-attaches `cx` around each poll of the wrapped future
+            // (rather than holding a thread-local guard across the whole
+            // `.await`, which would be unsound if the future is resumed on
+            // a different worker thread between polls).
+            let result = next.run(ctx).with_context(cx.clone()).await;
 
             let span = cx.span();
             match &result {
