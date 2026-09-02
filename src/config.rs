@@ -34,7 +34,11 @@ use std::time::Duration;
 /// # let _ = (client, worker);
 /// # }
 /// ```
-#[derive(Debug, Clone)]
+///
+/// [`Debug`] is implemented manually (rather than derived) so the
+/// [`auth_token`](Self::auth_token) bearer token and any secret-bearing
+/// custom header values are never rendered into logs or panic messages.
+#[derive(Clone)]
 pub struct ConnectionConfig {
     /// OJS server URL.
     pub url: String,
@@ -44,6 +48,22 @@ pub struct ConnectionConfig {
     pub headers: HashMap<String, String>,
     /// Request timeout.
     pub timeout: Option<Duration>,
+}
+
+impl std::fmt::Debug for ConnectionConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectionConfig")
+            .field("url", &self.url)
+            // Never render the bearer token value; expose only presence.
+            .field(
+                "auth_token",
+                &self.auth_token.as_ref().map(|_| "<redacted>"),
+            )
+            // Header *values* may carry credentials, so render only names.
+            .field("headers", &self.headers.keys().collect::<Vec<_>>())
+            .field("timeout", &self.timeout)
+            .finish()
+    }
 }
 
 impl ConnectionConfig {

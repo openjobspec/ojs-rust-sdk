@@ -9,7 +9,14 @@ const OJS_CONTENT_TYPE: &str = "application/openjobspec+json";
 const BASE_PATH: &str = "/ojs/v1";
 
 /// HTTP transport layer for communicating with an OJS server.
-#[derive(Clone, Debug)]
+///
+/// [`Debug`] is implemented manually (rather than derived) so the bearer
+/// `auth_token` and any secret-bearing custom header values are never
+/// rendered. This matters because `Client`/`Worker` hold a
+/// `DynTransport` (`Arc<dyn Transport>`) and derive/forward `Debug`, so a
+/// derived transport `Debug` would recursively leak the token via
+/// `format!("{client:?}")`.
+#[derive(Clone)]
 pub(crate) struct HttpTransport {
     base_url: String,
     #[cfg(feature = "reqwest-transport")]
@@ -17,6 +24,23 @@ pub(crate) struct HttpTransport {
     auth_token: Option<String>,
     headers: HashMap<String, String>,
     retry_config: RetryConfig,
+}
+
+impl std::fmt::Debug for HttpTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpTransport")
+            .field("base_url", &self.base_url)
+            // Never render the bearer token value; expose only presence.
+            .field(
+                "auth_token",
+                &self.auth_token.as_ref().map(|_| "<redacted>"),
+            )
+            // Header *values* may carry credentials (e.g. an API key), so
+            // render only the header names, never the values.
+            .field("headers", &self.headers.keys().collect::<Vec<_>>())
+            .field("retry_config", &self.retry_config)
+            .finish()
+    }
 }
 
 /// Configuration used to construct an HttpTransport from client settings.

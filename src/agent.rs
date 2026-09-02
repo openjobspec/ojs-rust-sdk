@@ -99,11 +99,29 @@ pub struct Divergence {
 }
 
 /// Thin HTTP client for the OJS Agent API.
-#[derive(Debug, Clone)]
+///
+/// [`Debug`] is implemented manually (rather than derived) so the
+/// [`auth_token`](Self::auth_token) bearer token is never rendered into logs
+/// or panic messages. Only the safe base URL and whether a token is present
+/// are shown.
+#[derive(Clone)]
 pub struct AgentClient {
     base_url: String,
     http_client: reqwest::Client,
     auth_token: Option<String>,
+}
+
+impl std::fmt::Debug for AgentClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentClient")
+            .field("base_url", &self.base_url)
+            // Never render the bearer token value; expose only presence.
+            .field(
+                "auth_token",
+                &self.auth_token.as_ref().map(|_| "<redacted>"),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl AgentClient {
