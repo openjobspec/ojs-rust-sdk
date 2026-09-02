@@ -128,7 +128,7 @@ impl NoneAttestor {
 }
 
 impl Attestor for NoneAttestor {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "none"
     }
 
@@ -168,57 +168,50 @@ impl PqcOnlyAttestor {
             key_id: key_id.to_string(),
         }
     }
+
+    /// The key identifier this attestor was configured with.
+    ///
+    /// Retained for introspection/logging even though [`attest`](Attestor::attest)
+    /// and [`verify`](Attestor::verify) do not yet perform real signing with it.
+    pub fn key_id(&self) -> &str {
+        &self.key_id
+    }
 }
 
 impl Attestor for PqcOnlyAttestor {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "pqc-only"
     }
 
-    fn attest(&self, input: &AttestInput) -> Result<AttestResult, AttestError> {
-        // Construct a digest from the input fields.
-        // In production this would use SHA-256; here we use a simple hash
-        // to avoid adding crypto dependencies.
-        let digest_input = format!("{}{}{}", input.args_hash, input.result_hash, input.timestamp);
-        let digest_bytes = simple_hash(digest_input.as_bytes());
-        let nonce = digest_bytes.iter().take(16).map(|b| format!("{b:02x}")).collect::<String>();
-
-        Ok(AttestResult {
-            quote: Some(Quote {
-                quote_type: quote_type::PQC_ONLY.to_string(),
-                evidence: digest_bytes.clone(),
-                nonce,
-                issued_at: input.timestamp.clone(),
-            }),
-            jurisdiction: None,
-            model_fingerprint: None,
-            signature: Signature {
-                algorithm: algorithm::ED25519.to_string(),
-                value: String::new(), // real signing requires Ed25519 key
-                key_id: self.key_id.clone(),
-            },
-        })
+    /// Always returns `Err(AttestError::NotAvailable)`.
+    ///
+    /// `PqcOnlyAttestor` does not yet perform real Ed25519/ML-DSA signing:
+    /// no signing dependency is wired into this crate. An earlier version
+    /// of this method returned `Ok` with an *empty* signature and a
+    /// non-cryptographic digest as the "evidence" -- a fabricated,
+    /// always-successful receipt that looked legitimate but proved
+    /// nothing. Failing honestly here is safer than shipping a receipt
+    /// that cannot back up its own claims: callers that check for `Ok`
+    /// before trusting a receipt cannot be misled into treating a fake
+    /// attestation as real. Construct a real signing-backed `Attestor` (or
+    /// use [`NoneAttestor`] to explicitly opt out of attestation) instead
+    /// of relying on this type for anything security-sensitive.
+    fn attest(&self, _input: &AttestInput) -> Result<AttestResult, AttestError> {
+        Err(AttestError::NotAvailable)
     }
 
-    fn verify(&self, receipt: &Receipt) -> Result<(), AttestError> {
-        if receipt.quote.is_none() {
-            return Err(AttestError::InvalidReceipt("receipt has no quote".into()));
-        }
-        // Full Ed25519 verification would require the public key.
-        // This stub validates structure only.
-        Ok(())
+    /// Always returns `Err(AttestError::VerificationFailed(_))`.
+    ///
+    /// See [`attest`](Self::attest): without real signing, there is no
+    /// signature this method could meaningfully check, so it must not
+    /// report any receipt as valid (the previous structure-only check
+    /// accepted every receipt that merely included a quote, regardless of
+    /// its contents).
+    fn verify(&self, _receipt: &Receipt) -> Result<(), AttestError> {
+        Err(AttestError::VerificationFailed(
+            "pqc-only attestor has no signing key material and cannot verify receipts".into(),
+        ))
     }
-}
-
-/// Simple non-cryptographic hash for structural completeness.
-/// Production code should use SHA-256 from the `sha2` crate.
-fn simple_hash(data: &[u8]) -> Vec<u8> {
-    let mut hash = [0u8; 32];
-    for (i, &byte) in data.iter().enumerate() {
-        hash[i % 32] ^= byte;
-        hash[i % 32] = hash[i % 32].wrapping_add(byte).wrapping_mul(31);
-    }
-    hash.to_vec()
 }
 
 #[cfg(test)]
@@ -242,9 +235,13 @@ mod tests {
     }
 
     #[test]
-    fn test_pqc_attestor() {
+    fn test_pqc_attestor_honestly_fails_attest() {
+        // PqcOnlyAttestor has no real signing key material wired in (see
+        // its `attest`/`verify` doc comments); it must fail honestly rather
+        // than fabricate a fake-successful receipt with an empty signature.
         let a = PqcOnlyAttestor::new("key-1");
         assert_eq!(a.name(), "pqc-only");
+        assert_eq!(a.key_id(), "key-1");
         let input = AttestInput {
             job_id: "test-456".into(),
             job_type: "ml.train".into(),
@@ -252,9 +249,8 @@ mod tests {
             result_hash: "sha256:def".into(),
             timestamp: "2024-01-15T12:00:00Z".into(),
         };
-        let result = a.attest(&input).unwrap();
-        assert!(result.quote.is_some());
-        assert_eq!(result.quote.unwrap().quote_type, quote_type::PQC_ONLY);
+        let err = a.attest(&input).unwrap_err();
+        assert!(matches!(err, AttestError::NotAvailable));
     }
 
     #[test]

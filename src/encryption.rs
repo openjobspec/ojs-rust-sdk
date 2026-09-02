@@ -113,6 +113,23 @@ impl KeyProvider for StaticKeyProvider {
 // ---------------------------------------------------------------------------
 
 const NONCE_SIZE: usize = 12;
+const KEY_SIZE: usize = 32;
+
+/// Validate that `key` is exactly [`KEY_SIZE`] (32) bytes and return it as a
+/// typed AES-256 key.
+///
+/// `Key::<Aes256Gcm>::from_slice` panics on a length mismatch; this checks
+/// the length itself first so a misconfigured key surfaces as an
+/// `OjsError::Handler` instead of crashing the calling task/thread.
+fn validate_key_len(key: &[u8]) -> Result<&Key<Aes256Gcm>, OjsError> {
+    if key.len() != KEY_SIZE {
+        return Err(OjsError::Handler(format!(
+            "invalid AES-256-GCM key length: expected {KEY_SIZE} bytes, got {}",
+            key.len()
+        )));
+    }
+    Ok(Key::<Aes256Gcm>::from_slice(key))
+}
 
 /// AES-256-GCM encryption codec.
 ///
@@ -130,8 +147,15 @@ impl EncryptionCodec {
     /// Encrypt `plaintext` with AES-256-GCM using the given 32-byte key.
     ///
     /// Returns `nonce (12 bytes) || ciphertext`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if `key` is not exactly 32 bytes, rather than panicking
+    /// (a misconfigured `KeyProvider` -- e.g. a copy-pasted secret that
+    /// wasn't hex/base64-decoded first -- is a plausible operator mistake,
+    /// not something that should crash the calling task).
     pub fn encrypt(&self, plaintext: &[u8], key: &[u8]) -> Result<Vec<u8>, OjsError> {
-        let key = Key::<Aes256Gcm>::from_slice(key);
+        let key = validate_key_len(key)?;
         let cipher = Aes256Gcm::new(key);
 
         let mut nonce_bytes = [0u8; NONCE_SIZE];
@@ -151,6 +175,11 @@ impl EncryptionCodec {
     /// Decrypt data previously produced by [`encrypt`](Self::encrypt).
     ///
     /// Expects `nonce (12 bytes) || ciphertext`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if `key` is not exactly 32 bytes, rather than panicking
+    /// (see [`encrypt`](Self::encrypt)).
     pub fn decrypt(&self, data: &[u8], key: &[u8]) -> Result<Vec<u8>, OjsError> {
         if data.len() < NONCE_SIZE {
             return Err(OjsError::Handler(
@@ -159,7 +188,7 @@ impl EncryptionCodec {
         }
 
         let (nonce_bytes, ciphertext) = data.split_at(NONCE_SIZE);
-        let key = Key::<Aes256Gcm>::from_slice(key);
+        let key = validate_key_len(key)?;
         let cipher = Aes256Gcm::new(key);
         let nonce = Nonce::from_slice(nonce_bytes);
 
