@@ -1,6 +1,6 @@
 //! OJS Rust SDK Recorder — captures execution traces for job handlers.
 
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Source code location for a trace entry.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -127,10 +127,10 @@ fn chrono_now() -> String {
 /// Converts days since Unix epoch to (year, month, day).
 fn days_to_date(days: u64) -> (u64, u64, u64) {
     // Algorithm from Howard Hinnant's date library (public domain).
-    let z = days + 719468;
-    let era = z / 146097;
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
     let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
@@ -162,7 +162,8 @@ mod tests {
         let mut r = Recorder::new();
         r.record_call("fn", "", "", 1);
         r.attach_source_map("abc", "main.rs", 10);
-        let sm = r.trace()[0].source_map.as_ref().unwrap();
+        let trace = r.trace();
+        let sm = trace[0].source_map.as_ref().unwrap();
         assert_eq!(sm.git_sha, "abc");
         assert_eq!(sm.line, 10);
     }

@@ -101,6 +101,10 @@ pub mod job;
 pub mod middleware;
 pub mod queue;
 pub mod rate_limiter;
+/// Execution trace recording for job handlers (function calls, arguments,
+/// results, timing, and source locations), independent of any particular
+/// transport or worker.
+pub mod recorder;
 pub mod retry;
 pub mod schema;
 #[cfg(feature = "testing")]
