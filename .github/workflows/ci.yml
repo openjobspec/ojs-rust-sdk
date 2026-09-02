@@ -89,3 +89,46 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
       - uses: EmbarkStudios/cargo-deny-action@v2
+
+  release-readiness:
+    name: Package & Consumer Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # stable
+      - uses: Swatinem/rust-cache@ad397744b0d591a723ab90405b7247fac0e6b8db # v2
+      - name: Build all targets
+        run: cargo build --locked --all-targets --all-features
+        env:
+          CARGO_TERM_COLOR: always
+      - name: Verify package and publish dry-run
+        run: |
+          cargo package --locked
+          cargo publish --dry-run --locked --no-verify
+        env:
+          CARGO_TERM_COLOR: always
+      - name: Check from a clean consumer
+        run: |
+          VERSION=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+          rm -rf target/consumer-smoke "target/package/ojs-${VERSION}"
+          mkdir -p target/consumer-smoke/src
+          tar -xzf "target/package/ojs-${VERSION}.crate" -C target/package
+          cat > target/consumer-smoke/Cargo.toml <<EOF
+          [package]
+          name = "ojs-consumer-smoke"
+          version = "0.0.0"
+          edition = "2021"
+          publish = false
+
+          [dependencies]
+          ojs = { path = "../package/ojs-${VERSION}" }
+          uuid = "=1.26.0"
+          indexmap = "=2.14.1"
+          EOF
+          printf 'use ojs as _;\nuse indexmap::IndexMap;\nuse uuid::Uuid;\nfn main() { let _ = Uuid::nil(); let _: IndexMap<String, String> = IndexMap::new(); }\n' > target/consumer-smoke/src/main.rs
+          cargo generate-lockfile --manifest-path target/consumer-smoke/Cargo.toml
+          cargo check --locked --manifest-path target/consumer-smoke/Cargo.toml
+          cargo tree --locked --manifest-path target/consumer-smoke/Cargo.toml | grep -F "uuid v1.26.0"
+          cargo tree --locked --manifest-path target/consumer-smoke/Cargo.toml | grep -F "indexmap v2.14.1"
+        env:
+          CARGO_TERM_COLOR: always
