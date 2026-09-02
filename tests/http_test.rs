@@ -288,7 +288,11 @@ async fn test_rate_limit_error() {
         .mount(&server)
         .await;
 
-    let client = Client::builder().url(server.uri()).retry_config(RetryConfig::disabled()).build().unwrap();
+    let client = Client::builder()
+        .url(server.uri())
+        .retry_config(RetryConfig::disabled())
+        .build()
+        .unwrap();
     let err = client.enqueue("test", json!({})).await.unwrap_err();
 
     match err {
@@ -323,7 +327,11 @@ async fn test_rate_limit_error_with_retry_after() {
         .mount(&server)
         .await;
 
-    let client = Client::builder().url(server.uri()).retry_config(RetryConfig::disabled()).build().unwrap();
+    let client = Client::builder()
+        .url(server.uri())
+        .retry_config(RetryConfig::disabled())
+        .build()
+        .unwrap();
     let err = client.enqueue("test", json!({})).await.unwrap_err();
 
     match err {
@@ -362,7 +370,11 @@ async fn test_rate_limit_error_with_full_headers() {
         .mount(&server)
         .await;
 
-    let client = Client::builder().url(server.uri()).retry_config(RetryConfig::disabled()).build().unwrap();
+    let client = Client::builder()
+        .url(server.uri())
+        .retry_config(RetryConfig::disabled())
+        .build()
+        .unwrap();
     let err = client.enqueue("test", json!({})).await.unwrap_err();
 
     match err {

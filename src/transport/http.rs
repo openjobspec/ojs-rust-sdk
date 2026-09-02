@@ -116,7 +116,12 @@ impl HttpTransport {
             let retry_after = parse_retry_after_header(response.headers());
             let rate_limit = parse_rate_limit_headers(response.headers(), retry_after);
             let body = response.bytes().await?;
-            return Err(parse_error_response(&body, status.as_u16(), retry_after, rate_limit));
+            return Err(parse_error_response(
+                &body,
+                status.as_u16(),
+                retry_after,
+                rate_limit,
+            ));
         }
 
         let body = response.bytes().await?;
@@ -210,7 +215,7 @@ impl Transport for HttpTransport {
                             }
                             OjsError::Server(ref server_err)
                                 if self.retry_config.retry_server_errors
-                                    && matches!(server_err.http_status, 502 | 503 | 504) =>
+                                    && matches!(server_err.http_status, 502..=504) =>
                             {
                                 None
                             }
@@ -284,13 +289,16 @@ fn parse_rate_limit_headers(
     headers: &reqwest::header::HeaderMap,
     retry_after: Option<std::time::Duration>,
 ) -> Option<RateLimitInfo> {
-    let limit = headers.get("X-RateLimit-Limit")
+    let limit = headers
+        .get("X-RateLimit-Limit")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<i64>().ok());
-    let remaining = headers.get("X-RateLimit-Remaining")
+    let remaining = headers
+        .get("X-RateLimit-Remaining")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<i64>().ok());
-    let reset = headers.get("X-RateLimit-Reset")
+    let reset = headers
+        .get("X-RateLimit-Reset")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<i64>().ok());
 

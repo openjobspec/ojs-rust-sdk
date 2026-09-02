@@ -153,7 +153,10 @@ mod tests {
         assert_eq!(t.func_name, "do_work");
         assert_eq!(t.duration_ms, 42);
         assert!(t.error.is_none());
-        assert!(!t.timestamp.starts_with("1970"), "timestamp should be current, not epoch");
+        assert!(
+            !t.timestamp.starts_with("1970"),
+            "timestamp should be current, not epoch"
+        );
         assert!(t.timestamp.ends_with('Z'), "timestamp should be UTC");
     }
 

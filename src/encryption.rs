@@ -5,8 +5,8 @@
 //!
 //! # Architecture
 //!
-//! - **Enqueue side**: Use [`encrypt_job`] to encrypt a job's args before sending.
-//! - **Worker side**: Add [`EncryptionMiddleware`] to the worker middleware chain;
+//! - **Enqueue side**: Use [`encrypt_job`](crate::encryption::encrypt_job) to encrypt a job's args before sending.
+//! - **Worker side**: Add [`EncryptionMiddleware`](crate::encryption::EncryptionMiddleware) to the worker middleware chain;
 //!   it transparently decrypts args before the handler sees them.
 //!
 //! # Example
@@ -86,10 +86,7 @@ impl StaticKeyProvider {
         let id = key_id.into();
         let mut keys = HashMap::new();
         keys.insert(id.clone(), key);
-        Self {
-            keys,
-            current: id,
-        }
+        Self { keys, current: id }
     }
 
     /// Add an additional key (e.g., a rotated-out key still needed for decryption).
@@ -265,7 +262,7 @@ impl Middleware for EncryptionMiddleware {
                     .meta
                     .as_ref()
                     .and_then(|m| m.get(LEGACY_META_ENCRYPTED))
-                    .and_then(|v| v.as_bool())
+                    .and_then(serde_json::Value::as_bool)
                     .unwrap_or(false);
 
             if is_encrypted {
@@ -310,10 +307,7 @@ impl Middleware for EncryptionMiddleware {
 
                 let decrypted: serde_json::Value =
                     serde_json::from_slice(&plaintext).map_err(|e| {
-                        OjsError::Handler(format!(
-                            "failed to parse decrypted args as JSON: {}",
-                            e
-                        ))
+                        OjsError::Handler(format!("failed to parse decrypted args as JSON: {}", e))
                     })?;
 
                 ctx.job.args = decrypted;
@@ -517,9 +511,7 @@ mod tests {
         assert_ne!(encrypted_job.args, original_args);
 
         // Decrypt and verify
-        let encoded = encrypted_job.args.as_array().unwrap()[0]
-            .as_str()
-            .unwrap();
+        let encoded = encrypted_job.args.as_array().unwrap()[0].as_str().unwrap();
         let raw = BASE64.decode(encoded).unwrap();
         let key = keys.get_key("test-key").unwrap();
         let plaintext = codec.decrypt(&raw, &key).unwrap();

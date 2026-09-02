@@ -264,4 +264,3 @@ fn test_manifest_capabilities_default() {
     assert!(!caps.workflows);
     assert!(!caps.pause_resume);
 }
-

@@ -165,13 +165,13 @@ pub mod serverless;
 pub use client::{Client, ClientBuilder, EnqueueBuilder, JobRequest};
 pub use config::ConnectionConfig;
 pub use errors::{JobError, OjsError, RateLimitInfo, Result, ServerError};
-pub use rate_limiter::RetryConfig;
 pub use events::Event;
 pub use job::{ConflictStrategy, Job, JobState, UniqueDimension, UniquePolicy};
 pub use middleware::{BoxFuture, FnMiddleware, HandlerResult, Middleware, Next};
 pub use queue::{
     CronJob, CronJobRequest, HealthStatus, Manifest, OverlapPolicy, Pagination, Queue, QueueStats,
 };
+pub use rate_limiter::RetryConfig;
 pub use retry::{OnExhaustion, RetryPolicy};
 pub use schema::{RegisterSchemaRequest, Schema, SchemaDetail};
 pub use transport::{DynTransport, Method as TransportMethod, Transport};

@@ -54,8 +54,7 @@ fn test_step_new() {
 
 #[test]
 fn test_step_with_queue() {
-    let step = Step::new("email.send", json!(["user@example.com"]))
-        .queue("email-queue");
+    let step = Step::new("email.send", json!(["user@example.com"])).queue("email-queue");
     assert_eq!(step.options.len(), 1);
 }
 
@@ -97,14 +96,16 @@ fn test_group_workflow() {
 
 #[test]
 fn test_batch_workflow() {
-    let callbacks = BatchCallbacks::new()
-        .on_complete(Step::new("on_done", json!({})));
+    let callbacks = BatchCallbacks::new().on_complete(Step::new("on_done", json!({})));
 
-    let wf = batch(callbacks, vec![
-        Step::new("batch_item", json!({"id": 1})),
-        Step::new("batch_item", json!({"id": 2})),
-        Step::new("batch_item", json!({"id": 3})),
-    ]);
+    let wf = batch(
+        callbacks,
+        vec![
+            Step::new("batch_item", json!({"id": 1})),
+            Step::new("batch_item", json!({"id": 2})),
+            Step::new("batch_item", json!({"id": 3})),
+        ],
+    );
 
     assert_eq!(wf.workflow_type, WorkflowType::Batch);
     assert_eq!(wf.steps.len(), 3);
@@ -112,9 +113,7 @@ fn test_batch_workflow() {
 
 #[test]
 fn test_workflow_with_name() {
-    let wf = chain(vec![
-        Step::new("step1", json!({})),
-    ]).name("my-workflow");
+    let wf = chain(vec![Step::new("step1", json!({}))]).name("my-workflow");
 
     assert!(wf.name.is_some());
     assert_eq!(wf.name.unwrap(), "my-workflow");
