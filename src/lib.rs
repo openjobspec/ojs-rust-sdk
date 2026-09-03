@@ -101,6 +101,10 @@ pub mod job;
 pub mod middleware;
 pub mod queue;
 pub mod rate_limiter;
+/// Execution trace recording for job handlers (function calls, arguments,
+/// results, timing, and source locations), independent of any particular
+/// transport or worker.
+pub mod recorder;
 pub mod retry;
 pub mod schema;
 #[cfg(feature = "testing")]
@@ -111,6 +115,13 @@ pub mod worker;
 pub mod workflow;
 
 /// Server-Sent Events (SSE) subscription for real-time job events.
+///
+/// Requires the `reqwest-transport` feature (this module talks to the OJS
+/// server's SSE endpoint directly via `reqwest`, independent of the
+/// [`Transport`](crate::transport::Transport) abstraction used by [`Client`]
+/// and [`Worker`]).
+#[cfg(feature = "reqwest-transport")]
+#[cfg_attr(docsrs, doc(cfg(feature = "reqwest-transport")))]
 pub mod subscribe;
 
 /// Tracing middleware for structured job processing instrumentation.
@@ -133,12 +144,19 @@ pub mod middleware_common;
 #[cfg_attr(docsrs, doc(cfg(feature = "otel-middleware")))]
 pub mod otel;
 
+/// Agent API client for fork/merge branching, pause/resume human-in-the-loop
+/// control, and deterministic replay of agent job executions.
+///
+/// Requires the `reqwest-transport` feature (uses `reqwest` directly rather
+/// than the [`Transport`](crate::transport::Transport) abstraction).
+#[cfg(feature = "reqwest-transport")]
+#[cfg_attr(docsrs, doc(cfg(feature = "reqwest-transport")))]
+pub mod agent;
+pub mod attest;
 /// Serverless adapters for AWS Lambda and other FaaS platforms.
 #[cfg(feature = "serverless-lambda")]
 #[cfg_attr(docsrs, doc(cfg(feature = "serverless-lambda")))]
 pub mod serverless;
-pub mod agent;
-pub mod attest;
 
 // ---------------------------------------------------------------------------
 // Public re-exports
@@ -147,13 +165,13 @@ pub mod attest;
 pub use client::{Client, ClientBuilder, EnqueueBuilder, JobRequest};
 pub use config::ConnectionConfig;
 pub use errors::{JobError, OjsError, RateLimitInfo, Result, ServerError};
-pub use rate_limiter::RetryConfig;
 pub use events::Event;
 pub use job::{ConflictStrategy, Job, JobState, UniqueDimension, UniquePolicy};
 pub use middleware::{BoxFuture, FnMiddleware, HandlerResult, Middleware, Next};
 pub use queue::{
     CronJob, CronJobRequest, HealthStatus, Manifest, OverlapPolicy, Pagination, Queue, QueueStats,
 };
+pub use rate_limiter::RetryConfig;
 pub use retry::{OnExhaustion, RetryPolicy};
 pub use schema::{RegisterSchemaRequest, Schema, SchemaDetail};
 pub use transport::{DynTransport, Method as TransportMethod, Transport};

@@ -75,7 +75,8 @@ body:
       description: Any relevant environment details (OS, language version, etc.).
       placeholder: |
         - OS: macOS 14.0
-        - Go: 1.22.0
-        - Redis: 7.2
+        - Rust: 1.75.0
+        - Cargo: 1.75.0
+        - OJS backend: Redis
     validations:
       required: false

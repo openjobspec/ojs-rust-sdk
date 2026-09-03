@@ -11,6 +11,11 @@ use std::time::Duration;
 /// ```rust
 /// use ojs::ConnectionConfig;
 ///
+/// // `Client`/`Worker` construction from a shared `ConnectionConfig` requires
+/// // the `reqwest-transport` feature (on by default); this block is a no-op
+/// // under `--no-default-features` so the doctest still passes either way.
+/// # #[cfg(feature = "reqwest-transport")]
+/// # {
 /// let config = ConnectionConfig::new("http://localhost:8080")
 ///     .auth_token("my-token")
 ///     .header("X-Tenant-Id", "tenant-42")
@@ -26,8 +31,14 @@ use std::time::Duration;
 ///     .queues(vec!["default"])
 ///     .build()
 ///     .unwrap();
+/// # let _ = (client, worker);
+/// # }
 /// ```
-#[derive(Debug, Clone)]
+///
+/// [`Debug`] is implemented manually (rather than derived) so the
+/// [`auth_token`](Self::auth_token) bearer token and any secret-bearing
+/// custom header values are never rendered into logs or panic messages.
+#[derive(Clone)]
 pub struct ConnectionConfig {
     /// OJS server URL.
     pub url: String,
@@ -37,6 +48,22 @@ pub struct ConnectionConfig {
     pub headers: HashMap<String, String>,
     /// Request timeout.
     pub timeout: Option<Duration>,
+}
+
+impl std::fmt::Debug for ConnectionConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectionConfig")
+            .field("url", &self.url)
+            // Never render the bearer token value; expose only presence.
+            .field(
+                "auth_token",
+                &self.auth_token.as_ref().map(|_| "<redacted>"),
+            )
+            // Header *values* may carry credentials, so render only names.
+            .field("headers", &self.headers.keys().collect::<Vec<_>>())
+            .field("timeout", &self.timeout)
+            .finish()
+    }
 }
 
 impl ConnectionConfig {
@@ -66,5 +93,31 @@ impl ConnectionConfig {
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_never_leaks_auth_token_or_header_values() {
+        let config = ConnectionConfig::new("http://localhost:8080")
+            .auth_token("super-secret-connection-token")
+            .header("X-Api-Key", "header-api-key-secret");
+        let dbg = format!("{config:?}");
+        assert!(
+            !dbg.contains("super-secret-connection-token"),
+            "Debug leaked auth token: {dbg}"
+        );
+        assert!(
+            !dbg.contains("header-api-key-secret"),
+            "Debug leaked header value: {dbg}"
+        );
+        // Safe/useful fields and presence metadata.
+        assert!(dbg.contains("ConnectionConfig"));
+        assert!(dbg.contains("http://localhost:8080"));
+        assert!(dbg.contains("<redacted>"));
+        assert!(dbg.contains("X-Api-Key"));
     }
 }

@@ -5,12 +5,22 @@ use crate::queue::{
     Pagination, Queue, QueueStats, QueuesResponse,
 };
 use crate::schema::{RegisterSchemaRequest, Schema, SchemaDetail, SchemasResponse};
-use crate::transport::{self, DynTransport, HttpTransport};
+#[cfg(feature = "reqwest-transport")]
+use crate::transport::HttpTransport;
+use crate::transport::{self, DynTransport};
 use crate::workflow::{EnqueueOption, Workflow, WorkflowDefinition};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use std::collections::HashMap;
+#[cfg(feature = "reqwest-transport")]
 use std::sync::Arc;
 use std::time::Duration;
+
+/// Job-type/queue-name validation, applied before any request reaches the
+/// transport layer. Self-contained: shared by [`EnqueueBuilder::send`] and,
+/// via the crate-private re-export below, by
+/// [`crate::workflow::WorkflowDefinition::validate`].
+mod validation;
+pub(crate) use validation::{validate_enqueue_options, validate_job_type};
 
 /// Percent-encode a string for use in URL path segments or query values.
 fn url_encode(s: &str) -> String {
@@ -31,6 +41,7 @@ pub struct ClientBuilder {
     retry_config: Option<crate::rate_limiter::RetryConfig>,
     #[cfg(feature = "reqwest-transport")]
     http_client: Option<reqwest::Client>,
+    transport: Option<DynTransport>,
 }
 
 impl ClientBuilder {
@@ -41,6 +52,7 @@ impl ClientBuilder {
             headers: HashMap::new(),
             timeout: None,
             retry_config: None,
+            transport: None,
             #[cfg(feature = "reqwest-transport")]
             http_client: None,
         }
@@ -91,10 +103,24 @@ impl ClientBuilder {
         self
     }
 
+    /// Use a custom [`Transport`](crate::transport::Transport) implementation
+    /// instead of the built-in reqwest-based HTTP transport.
+    ///
+    /// When set, `url()`, `auth_token()`, `header()`, `timeout()`, and
+    /// `http_client()` are ignored: a custom transport is responsible for
+    /// its own request construction, authentication, and headers. This is
+    /// also the only way to build a [`Client`] via [`ClientBuilder`] when the
+    /// `reqwest-transport` feature is disabled (equivalent to
+    /// [`Client::with_transport`]).
+    pub fn transport(mut self, transport: DynTransport) -> Self {
+        self.transport = Some(transport);
+        self
+    }
+
     /// Set the retry configuration for rate-limited responses.
     ///
     /// By default, the client retries up to 3 times on `429 Too Many Requests`
-    /// responses with exponential backoff. Use [`RetryConfig::disabled()`] to
+    /// responses with exponential backoff. Use [`RetryConfig::disabled()`](crate::rate_limiter::RetryConfig::disabled) to
     /// turn off automatic retries.
     pub fn retry_config(mut self, config: crate::rate_limiter::RetryConfig) -> Self {
         self.retry_config = Some(config);
@@ -103,25 +129,39 @@ impl ClientBuilder {
 
     /// Build the client.
     pub fn build(self) -> crate::Result<Client> {
-        let url = self
-            .url
-            .ok_or_else(|| OjsError::Builder("url is required".into()))?;
+        let transport: DynTransport = match self.transport {
+            Some(t) => t,
+            None => {
+                let url = self
+                    .url
+                    .ok_or_else(|| OjsError::Builder("url is required".into()))?;
 
-        let transport = HttpTransport::new(
-            &url,
-            crate::transport::http::TransportConfig {
-                auth_token: self.auth_token,
-                headers: self.headers,
-                timeout: self.timeout,
-                retry_config: self.retry_config,
+                #[cfg(not(feature = "reqwest-transport"))]
+                {
+                    return Err(OjsError::Builder(format!(
+                        "Client::builder().build() requires either a custom transport \
+                         via `.transport(...)` or the `reqwest-transport` feature \
+                         (attempted to connect to `{url}`)"
+                    )));
+                }
+
                 #[cfg(feature = "reqwest-transport")]
-                http_client: self.http_client,
-            },
-        );
+                {
+                    Arc::new(HttpTransport::new(
+                        &url,
+                        crate::transport::http::TransportConfig {
+                            auth_token: self.auth_token,
+                            headers: self.headers,
+                            timeout: self.timeout,
+                            retry_config: self.retry_config,
+                            http_client: self.http_client,
+                        },
+                    ))
+                }
+            }
+        };
 
-        Ok(Client {
-            transport: Arc::new(transport),
-        })
+        Ok(Client { transport })
     }
 }
 
@@ -241,12 +281,16 @@ impl Client {
 
     /// Get job details by ID.
     pub async fn get_job(&self, id: &str) -> crate::Result<Job> {
-        transport::transport_get(&self.transport, &format!("/jobs/{}", id)).await
+        let resp: crate::job::JobResponseWire =
+            transport::transport_get(&self.transport, &format!("/jobs/{}", id)).await?;
+        Ok(resp.job)
     }
 
     /// Cancel a job by ID.
     pub async fn cancel_job(&self, id: &str) -> crate::Result<Job> {
-        transport::transport_delete(&self.transport, &format!("/jobs/{}", id)).await
+        let resp: crate::job::JobResponseWire =
+            transport::transport_delete(&self.transport, &format!("/jobs/{}", id)).await?;
+        Ok(resp.job)
     }
 
     // -----------------------------------------------------------------------
@@ -255,18 +299,25 @@ impl Client {
 
     /// Create a workflow.
     pub async fn create_workflow(&self, def: WorkflowDefinition) -> crate::Result<Workflow> {
+        def.validate()?;
         let wire = def.to_wire();
-        transport::transport_post(&self.transport, "/workflows", &wire).await
+        let resp: crate::workflow::WorkflowResponseWire =
+            transport::transport_post(&self.transport, "/workflows", &wire).await?;
+        Ok(resp.workflow)
     }
 
     /// Get workflow status by ID.
     pub async fn get_workflow(&self, id: &str) -> crate::Result<Workflow> {
-        transport::transport_get(&self.transport, &format!("/workflows/{}", id)).await
+        let resp: crate::workflow::WorkflowResponseWire =
+            transport::transport_get(&self.transport, &format!("/workflows/{}", id)).await?;
+        Ok(resp.workflow)
     }
 
     /// Cancel a workflow by ID.
     pub async fn cancel_workflow(&self, id: &str) -> crate::Result<Workflow> {
-        transport::transport_delete(&self.transport, &format!("/workflows/{}", id)).await
+        let resp: crate::workflow::WorkflowResponseWire =
+            transport::transport_delete(&self.transport, &format!("/workflows/{}", id)).await?;
+        Ok(resp.workflow)
     }
 
     // -----------------------------------------------------------------------
@@ -331,8 +382,10 @@ impl Client {
 
     /// Retry a dead letter job.
     pub async fn retry_dead_letter_job(&self, id: &str) -> crate::Result<Job> {
-        transport::transport_post_empty(&self.transport, &format!("/dead-letter/{}/retry", id))
-            .await
+        let resp: crate::job::JobResponseWire =
+            transport::transport_post_empty(&self.transport, &format!("/dead-letter/{}/retry", id))
+                .await?;
+        Ok(resp.job)
     }
 
     /// Discard a dead letter job permanently.
@@ -353,7 +406,9 @@ impl Client {
 
     /// Register a new cron job.
     pub async fn register_cron_job(&self, req: CronJobRequest) -> crate::Result<CronJob> {
-        transport::transport_post(&self.transport, "/cron", &req).await
+        let resp: crate::queue::CronJobResponse =
+            transport::transport_post(&self.transport, "/cron", &req).await?;
+        Ok(resp.cron_job)
     }
 
     /// Unregister a cron job by name.
@@ -501,11 +556,7 @@ impl EnqueueBuilder {
     /// Send the enqueue request.
     pub async fn send(self) -> crate::Result<Job> {
         validate_job_type(&self.job_type)?;
-        for opt in &self.options {
-            if let EnqueueOption::Queue(ref q) = opt {
-                validate_queue_name(q)?;
-            }
-        }
+        validate_enqueue_options(&self.options)?;
 
         let args = crate::workflow::normalize_args(&self.args);
         let options_wire = crate::workflow::resolve_options(&self.options);
@@ -571,145 +622,5 @@ impl JobRequest {
     pub fn with_option(mut self, opt: EnqueueOption) -> Self {
         self.options.push(opt);
         self
-    }
-}
-
-const MAX_TYPE_LENGTH: usize = 255;
-const MAX_QUEUE_LENGTH: usize = 128;
-
-fn validate_job_type(job_type: &str) -> crate::Result<()> {
-    if job_type.is_empty() {
-        return Err(OjsError::Builder("job type must not be empty".into()));
-    }
-    if job_type.len() > MAX_TYPE_LENGTH {
-        return Err(OjsError::Builder(format!(
-            "job type must not exceed {} characters, got {}",
-            MAX_TYPE_LENGTH,
-            job_type.len()
-        )));
-    }
-    let valid = job_type.split('.').all(|segment| {
-        !segment.is_empty()
-            && segment.starts_with(|c: char| c.is_ascii_lowercase())
-            && segment
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
-    });
-    if !valid {
-        return Err(OjsError::Builder(format!(
-            "invalid job type {:?}: each segment must match [a-z][a-z0-9_]*",
-            job_type
-        )));
-    }
-    Ok(())
-}
-
-fn validate_queue_name(queue: &str) -> crate::Result<()> {
-    if queue.is_empty() {
-        return Err(OjsError::Builder("queue name must not be empty".into()));
-    }
-    if queue.len() > MAX_QUEUE_LENGTH {
-        return Err(OjsError::Builder(format!(
-            "queue name must not exceed {} characters, got {}",
-            MAX_QUEUE_LENGTH,
-            queue.len()
-        )));
-    }
-    let first = queue.as_bytes()[0];
-    if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
-        return Err(OjsError::Builder(format!(
-            "invalid queue name {:?}: must start with lowercase alphanumeric",
-            queue
-        )));
-    }
-    let last = queue.as_bytes()[queue.len() - 1];
-    if !(last.is_ascii_lowercase() || last.is_ascii_digit()) {
-        return Err(OjsError::Builder(format!(
-            "invalid queue name {:?}: must end with lowercase alphanumeric",
-            queue
-        )));
-    }
-    let bytes = queue.as_bytes();
-    for i in 0..bytes.len() {
-        let c = bytes[i] as char;
-        if !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '.') {
-            return Err(OjsError::Builder(format!(
-                "invalid queue name {:?}: must contain only lowercase alphanumeric, hyphens, and dots",
-                queue
-            )));
-        }
-        if (c == '-' || c == '.') && i + 1 < bytes.len() {
-            let next = bytes[i + 1] as char;
-            if next == '-' || next == '.' {
-                return Err(OjsError::Builder(format!(
-                    "invalid queue name {:?}: must not contain consecutive separators",
-                    queue
-                )));
-            }
-        }
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod queue_validation_tests {
-    use super::validate_queue_name;
-
-    #[test]
-    fn valid_queue_names() {
-        assert!(validate_queue_name("default").is_ok());
-        assert!(validate_queue_name("my-queue").is_ok());
-        assert!(validate_queue_name("queue.v2").is_ok());
-        assert!(validate_queue_name("email.send.priority").is_ok());
-        assert!(validate_queue_name("q").is_ok());
-        assert!(validate_queue_name("0-queue").is_ok());
-    }
-
-    #[test]
-    fn rejects_empty() {
-        assert!(validate_queue_name("").is_err());
-    }
-
-    #[test]
-    fn rejects_too_long() {
-        let long = "a".repeat(129);
-        assert!(validate_queue_name(&long).is_err());
-    }
-
-    #[test]
-    fn accepts_max_length() {
-        let exact = "a".repeat(128);
-        assert!(validate_queue_name(&exact).is_ok());
-    }
-
-    #[test]
-    fn rejects_uppercase() {
-        assert!(validate_queue_name("MyQueue").is_err());
-    }
-
-    #[test]
-    fn rejects_trailing_separator() {
-        assert!(validate_queue_name("queue.").is_err());
-        assert!(validate_queue_name("queue-").is_err());
-    }
-
-    #[test]
-    fn rejects_leading_separator() {
-        assert!(validate_queue_name(".queue").is_err());
-        assert!(validate_queue_name("-queue").is_err());
-    }
-
-    #[test]
-    fn rejects_consecutive_separators() {
-        assert!(validate_queue_name("queue..name").is_err());
-        assert!(validate_queue_name("queue--name").is_err());
-        assert!(validate_queue_name("queue.-name").is_err());
-        assert!(validate_queue_name("queue-.name").is_err());
-    }
-
-    #[test]
-    fn rejects_special_characters() {
-        assert!(validate_queue_name("queue@name").is_err());
-        assert!(validate_queue_name("queue name").is_err());
     }
 }

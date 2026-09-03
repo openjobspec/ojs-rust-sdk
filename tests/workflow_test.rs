@@ -54,8 +54,7 @@ fn test_step_new() {
 
 #[test]
 fn test_step_with_queue() {
-    let step = Step::new("email.send", json!(["user@example.com"]))
-        .queue("email-queue");
+    let step = Step::new("email.send", json!(["user@example.com"])).queue("email-queue");
     assert_eq!(step.options.len(), 1);
 }
 
@@ -97,14 +96,16 @@ fn test_group_workflow() {
 
 #[test]
 fn test_batch_workflow() {
-    let callbacks = BatchCallbacks::new()
-        .on_complete(Step::new("on_done", json!({})));
+    let callbacks = BatchCallbacks::new().on_complete(Step::new("on_done", json!({})));
 
-    let wf = batch(callbacks, vec![
-        Step::new("batch_item", json!({"id": 1})),
-        Step::new("batch_item", json!({"id": 2})),
-        Step::new("batch_item", json!({"id": 3})),
-    ]);
+    let wf = batch(
+        callbacks,
+        vec![
+            Step::new("batch_item", json!({"id": 1})),
+            Step::new("batch_item", json!({"id": 2})),
+            Step::new("batch_item", json!({"id": 3})),
+        ],
+    );
 
     assert_eq!(wf.workflow_type, WorkflowType::Batch);
     assert_eq!(wf.steps.len(), 3);
@@ -112,9 +113,7 @@ fn test_batch_workflow() {
 
 #[test]
 fn test_workflow_with_name() {
-    let wf = chain(vec![
-        Step::new("step1", json!({})),
-    ]).name("my-workflow");
+    let wf = chain(vec![Step::new("step1", json!({}))]).name("my-workflow");
 
     assert!(wf.name.is_some());
     assert_eq!(wf.name.unwrap(), "my-workflow");
@@ -186,8 +185,36 @@ fn test_workflow_deserialize() {
     assert_eq!(wf.id, "wf_01234");
     assert_eq!(wf.state, WorkflowState::Running);
     assert_eq!(wf.steps.len(), 2);
+    assert_eq!(wf.steps[0].id, "step-0");
     assert_eq!(wf.steps[0].job_type, "step1");
     assert_eq!(wf.steps[1].state, "active");
+}
+
+#[test]
+fn test_workflow_cancel_response_preserves_legacy_public_fields() {
+    let wf: Workflow = serde_json::from_value(json!({
+        "id": "wf_cancelled",
+        "state": "cancelled",
+        "steps_cancelled": 3,
+        "steps_already_completed": 2
+    }))
+    .unwrap();
+
+    assert_eq!(wf.steps_cancelled, Some(3));
+    assert_eq!(wf.steps_already_complete, Some(2));
+}
+
+#[test]
+fn test_workflow_step_status_preserves_legacy_fields() {
+    let step: WorkflowStepStatus = serde_json::from_value(json!({
+        "type": "step1",
+        "state": "waiting",
+        "depends_on": ["step-0"]
+    }))
+    .unwrap();
+
+    assert!(step.id.is_empty());
+    assert_eq!(step.depends_on, vec!["step-0"]);
 }
 
 #[test]

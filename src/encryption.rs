@@ -5,8 +5,8 @@
 //!
 //! # Architecture
 //!
-//! - **Enqueue side**: Use [`encrypt_job`] to encrypt a job's args before sending.
-//! - **Worker side**: Add [`EncryptionMiddleware`] to the worker middleware chain;
+//! - **Enqueue side**: Use [`encrypt_job`](crate::encryption::encrypt_job) to encrypt a job's args before sending.
+//! - **Worker side**: Add [`EncryptionMiddleware`](crate::encryption::EncryptionMiddleware) to the worker middleware chain;
 //!   it transparently decrypts args before the handler sees them.
 //!
 //! # Example
@@ -86,10 +86,7 @@ impl StaticKeyProvider {
         let id = key_id.into();
         let mut keys = HashMap::new();
         keys.insert(id.clone(), key);
-        Self {
-            keys,
-            current: id,
-        }
+        Self { keys, current: id }
     }
 
     /// Add an additional key (e.g., a rotated-out key still needed for decryption).
@@ -113,6 +110,23 @@ impl KeyProvider for StaticKeyProvider {
 // ---------------------------------------------------------------------------
 
 const NONCE_SIZE: usize = 12;
+const KEY_SIZE: usize = 32;
+
+/// Validate that `key` is exactly [`KEY_SIZE`] (32) bytes and return it as a
+/// typed AES-256 key.
+///
+/// `Key::<Aes256Gcm>::from_slice` panics on a length mismatch; this checks
+/// the length itself first so a misconfigured key surfaces as an
+/// `OjsError::Handler` instead of crashing the calling task/thread.
+fn validate_key_len(key: &[u8]) -> Result<&Key<Aes256Gcm>, OjsError> {
+    if key.len() != KEY_SIZE {
+        return Err(OjsError::Handler(format!(
+            "invalid AES-256-GCM key length: expected {KEY_SIZE} bytes, got {}",
+            key.len()
+        )));
+    }
+    Ok(Key::<Aes256Gcm>::from_slice(key))
+}
 
 /// AES-256-GCM encryption codec.
 ///
@@ -130,8 +144,15 @@ impl EncryptionCodec {
     /// Encrypt `plaintext` with AES-256-GCM using the given 32-byte key.
     ///
     /// Returns `nonce (12 bytes) || ciphertext`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if `key` is not exactly 32 bytes, rather than panicking
+    /// (a misconfigured `KeyProvider` -- e.g. a copy-pasted secret that
+    /// wasn't hex/base64-decoded first -- is a plausible operator mistake,
+    /// not something that should crash the calling task).
     pub fn encrypt(&self, plaintext: &[u8], key: &[u8]) -> Result<Vec<u8>, OjsError> {
-        let key = Key::<Aes256Gcm>::from_slice(key);
+        let key = validate_key_len(key)?;
         let cipher = Aes256Gcm::new(key);
 
         let mut nonce_bytes = [0u8; NONCE_SIZE];
@@ -151,6 +172,11 @@ impl EncryptionCodec {
     /// Decrypt data previously produced by [`encrypt`](Self::encrypt).
     ///
     /// Expects `nonce (12 bytes) || ciphertext`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if `key` is not exactly 32 bytes, rather than panicking
+    /// (see [`encrypt`](Self::encrypt)).
     pub fn decrypt(&self, data: &[u8], key: &[u8]) -> Result<Vec<u8>, OjsError> {
         if data.len() < NONCE_SIZE {
             return Err(OjsError::Handler(
@@ -159,7 +185,7 @@ impl EncryptionCodec {
         }
 
         let (nonce_bytes, ciphertext) = data.split_at(NONCE_SIZE);
-        let key = Key::<Aes256Gcm>::from_slice(key);
+        let key = validate_key_len(key)?;
         let cipher = Aes256Gcm::new(key);
         let nonce = Nonce::from_slice(nonce_bytes);
 
@@ -236,7 +262,7 @@ impl Middleware for EncryptionMiddleware {
                     .meta
                     .as_ref()
                     .and_then(|m| m.get(LEGACY_META_ENCRYPTED))
-                    .and_then(|v| v.as_bool())
+                    .and_then(serde_json::Value::as_bool)
                     .unwrap_or(false);
 
             if is_encrypted {
@@ -281,10 +307,7 @@ impl Middleware for EncryptionMiddleware {
 
                 let decrypted: serde_json::Value =
                     serde_json::from_slice(&plaintext).map_err(|e| {
-                        OjsError::Handler(format!(
-                            "failed to parse decrypted args as JSON: {}",
-                            e
-                        ))
+                        OjsError::Handler(format!("failed to parse decrypted args as JSON: {}", e))
                     })?;
 
                 ctx.job.args = decrypted;
@@ -387,6 +410,7 @@ mod tests {
             result: None,
             tags: vec![],
             timeout_ms: None,
+            checkpoint: None,
         }
     }
 
@@ -409,6 +433,37 @@ mod tests {
         let codec = EncryptionCodec::new();
         let key = b"0123456789abcdef0123456789abcdef";
         let result = codec.decrypt(&[0u8; 5], key);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_codec_encrypt_rejects_short_key_without_panicking() {
+        let codec = EncryptionCodec::new();
+        // A plausible operator mistake: a short human-readable "key" that
+        // was never hex/base64-decoded into 32 raw bytes. This must return
+        // an error, not panic (previously `Key::from_slice` would panic).
+        let short_key = b"too-short";
+        let result = codec.encrypt(b"secret data", short_key);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("32"));
+    }
+
+    #[test]
+    fn test_codec_encrypt_rejects_long_key_without_panicking() {
+        let codec = EncryptionCodec::new();
+        let long_key = [0u8; 64];
+        let result = codec.encrypt(b"secret data", &long_key);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_codec_decrypt_rejects_wrong_length_key_without_panicking() {
+        let codec = EncryptionCodec::new();
+        let key32 = b"0123456789abcdef0123456789abcdef";
+        let encrypted = codec.encrypt(b"secret data", key32).unwrap();
+
+        let short_key = b"too-short";
+        let result = codec.decrypt(&encrypted, short_key);
         assert!(result.is_err());
     }
 
@@ -456,9 +511,7 @@ mod tests {
         assert_ne!(encrypted_job.args, original_args);
 
         // Decrypt and verify
-        let encoded = encrypted_job.args.as_array().unwrap()[0]
-            .as_str()
-            .unwrap();
+        let encoded = encrypted_job.args.as_array().unwrap()[0].as_str().unwrap();
         let raw = BASE64.decode(encoded).unwrap();
         let key = keys.get_key("test-key").unwrap();
         let plaintext = codec.decrypt(&raw, &key).unwrap();

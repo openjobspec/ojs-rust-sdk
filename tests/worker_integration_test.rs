@@ -1,3 +1,10 @@
+// This file exercises Client/Worker against a real (mocked) HTTP
+// transport and therefore requires the `reqwest-transport` feature
+// (enabled by default). Under `--no-default-features` this file
+// compiles to an empty test binary instead of reporting spurious
+// failures for a feature that was deliberately disabled.
+#![cfg(feature = "reqwest-transport")]
+
 use ojs::{JobContext, Worker};
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};

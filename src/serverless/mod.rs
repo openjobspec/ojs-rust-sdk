@@ -17,7 +17,7 @@
 //! # AWS Lambda with SQS
 //!
 //! The most common pattern is using SQS event source mapping to trigger Lambda
-//! functions. The [`LambdaHandler`] wraps your job handlers and translates SQS
+//! functions. The [`LambdaHandler`](crate::serverless::aws_lambda::LambdaHandler) wraps your job handlers and translates SQS
 //! events into OJS job processing:
 //!
 //! ```rust,ignore
@@ -45,12 +45,21 @@
 //! # HTTP Push Delivery
 //!
 //! For HTTP push delivery (OJS server pushes jobs to a Lambda Function URL),
-//! use [`LambdaHandler::handle_http`].
+//! use [`LambdaHandler::handle_http`](crate::serverless::aws_lambda::LambdaHandler::handle_http)
+//! when authentication is handled upstream, or
+//! [`LambdaHandler::handle_http_authenticated`](crate::serverless::aws_lambda::LambdaHandler::handle_http_authenticated)
+//! to verify `X-OJS-Timestamp`/`X-OJS-Signature`, require a non-empty
+//! `delivery_id`, validate forwarded delivery/job headers, and suppress
+//! replayed delivery IDs within the freshness window. The default replay
+//! store is process-shared in memory; production deployments spanning
+//! multiple Lambda execution environments should configure an external
+//! [`DeliveryIdStore`](crate::serverless::aws_lambda::DeliveryIdStore)
+//! backed by DynamoDB, Redis, or another atomic TTL store.
 //!
 //! # Direct Invocation
 //!
 //! For direct Lambda invocation with a single job payload, use
-//! [`LambdaHandler::handle_direct`].
+//! [`LambdaHandler::handle_direct`](crate::serverless::aws_lambda::LambdaHandler::handle_direct).
 
 #[cfg(feature = "serverless-lambda")]
 #[cfg_attr(docsrs, doc(cfg(feature = "serverless-lambda")))]

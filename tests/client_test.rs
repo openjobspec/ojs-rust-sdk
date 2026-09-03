@@ -1,3 +1,10 @@
+// This file exercises Client/Worker against a real (mocked) HTTP
+// transport and therefore requires the `reqwest-transport` feature
+// (enabled by default). Under `--no-default-features` this file
+// compiles to an empty test binary instead of reporting spurious
+// failures for a feature that was deliberately disabled.
+#![cfg(feature = "reqwest-transport")]
+
 use ojs::{Client, ConnectionConfig, JobRequest, RetryPolicy, Worker};
 use serde_json::json;
 
@@ -23,6 +30,32 @@ fn test_client_builder_with_all_options() {
         .header("X-Custom", "value")
         .build();
     assert!(result.is_ok());
+}
+
+#[test]
+fn test_client_debug_does_not_recursively_leak_auth_token() {
+    // `Client` derives `Debug` and holds a `DynTransport`. The default
+    // `HttpTransport` must redact its bearer token so `format!("{client:?}")`
+    // cannot leak it through the transport chain.
+    let client = Client::builder()
+        .url("http://localhost:8080")
+        .auth_token("recursive-leak-token")
+        .header("X-Api-Key", "recursive-header-secret")
+        .build()
+        .unwrap();
+    let dbg = format!("{client:?}");
+    assert!(
+        !dbg.contains("recursive-leak-token"),
+        "Client Debug recursively leaked the auth token: {dbg}"
+    );
+    assert!(
+        !dbg.contains("recursive-header-secret"),
+        "Client Debug recursively leaked a header value: {dbg}"
+    );
+    assert!(
+        dbg.contains("<redacted>"),
+        "expected redaction marker: {dbg}"
+    );
 }
 
 #[test]

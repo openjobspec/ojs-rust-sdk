@@ -43,6 +43,14 @@ pub enum OjsError {
     #[error("handler error: {0}")]
     Handler(String),
 
+    /// The handler exceeded its configured execution timeout (e.g. via the
+    /// `common-middleware` feature's `TimeoutMiddleware`). Reported to the
+    /// server as the canonical `"timeout"` NACK code
+    /// ([`crate::errors::ERR_TIMEOUT`]) rather than the generic
+    /// `"handler_error"` code, and is retryable.
+    #[error("handler timeout: {0}")]
+    Timeout(String),
+
     /// The handler returned a non-retryable error. The job will not be retried.
     #[error("non-retryable error: {0}")]
     NonRetryable(String),
@@ -195,13 +203,19 @@ pub struct RateLimitInfo {
 
 // ---------------------------------------------------------------------------
 // Wire format for parsing server error responses
+//
+// Only consumed by the reqwest-based `transport::http` module today; gated
+// the same way so a `--no-default-features` build (no reqwest transport)
+// does not carry never-constructed dead code.
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "reqwest-transport")]
 #[derive(Debug, Deserialize)]
 pub(crate) struct ErrorResponse {
     pub error: ServerErrorPayload,
 }
 
+#[cfg(feature = "reqwest-transport")]
 #[derive(Debug, Deserialize)]
 pub(crate) struct ServerErrorPayload {
     pub code: String,
@@ -214,6 +228,7 @@ pub(crate) struct ServerErrorPayload {
     pub request_id: Option<String>,
 }
 
+#[cfg(feature = "reqwest-transport")]
 impl ServerErrorPayload {
     pub fn into_server_error(self, http_status: u16) -> ServerError {
         ServerError {

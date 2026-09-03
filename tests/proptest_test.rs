@@ -33,7 +33,7 @@ fn arb_json_value() -> impl Strategy<Value = serde_json::Value> {
         Just(serde_json::Value::Null),
         any::<bool>().prop_map(serde_json::Value::Bool),
         any::<i64>().prop_map(|v| serde_json::json!(v)),
-        "[a-zA-Z0-9_]{0,50}".prop_map(|s| serde_json::Value::String(s)),
+        "[a-zA-Z0-9_]{0,50}".prop_map(serde_json::Value::String),
         Just(serde_json::json!([])),
         Just(serde_json::json!({})),
     ]

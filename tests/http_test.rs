@@ -1,6 +1,13 @@
+// This file exercises Client/Worker against a real (mocked) HTTP
+// transport and therefore requires the `reqwest-transport` feature
+// (enabled by default). Under `--no-default-features` this file
+// compiles to an empty test binary instead of reporting spurious
+// failures for a feature that was deliberately disabled.
+#![cfg(feature = "reqwest-transport")]
+
 use ojs::{Client, JobRequest, OjsError, RetryConfig, RetryPolicy};
 use serde_json::json;
-use wiremock::matchers::{header, method, path};
+use wiremock::matchers::{body_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const OJS_CONTENT_TYPE: &str = "application/openjobspec+json";
@@ -169,18 +176,22 @@ async fn test_batch_enqueue() {
 async fn test_get_job() {
     let server = MockServer::start().await;
 
+    // Per ojs-http-binding.md §9.3, GET /jobs/:id wraps the job in a
+    // top-level "job" object.
     Mock::given(method("GET"))
         .and(path("/ojs/v1/jobs/job-123"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "specversion": "1.0",
-            "id": "job-123",
-            "type": "email.send",
-            "queue": "default",
-            "args": [{"to": "user@example.com"}],
-            "state": "active",
-            "attempt": 1,
-            "priority": 0,
-            "tags": []
+            "job": {
+                "specversion": "1.0",
+                "id": "job-123",
+                "type": "email.send",
+                "queue": "default",
+                "args": [{"to": "user@example.com"}],
+                "state": "active",
+                "attempt": 1,
+                "priority": 0,
+                "tags": []
+            }
         })))
         .expect(1)
         .mount(&server)
@@ -198,18 +209,22 @@ async fn test_get_job() {
 async fn test_cancel_job() {
     let server = MockServer::start().await;
 
+    // Per ojs-http-binding.md §9.4, DELETE /jobs/:id wraps the job in a
+    // top-level "job" object.
     Mock::given(method("DELETE"))
         .and(path("/ojs/v1/jobs/job-456"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "specversion": "1.0",
-            "id": "job-456",
-            "type": "test",
-            "queue": "default",
-            "args": [],
-            "state": "cancelled",
-            "attempt": 0,
-            "priority": 0,
-            "tags": []
+            "job": {
+                "specversion": "1.0",
+                "id": "job-456",
+                "type": "test",
+                "queue": "default",
+                "args": [],
+                "state": "cancelled",
+                "attempt": 0,
+                "priority": 0,
+                "tags": []
+            }
         })))
         .expect(1)
         .mount(&server)
@@ -273,7 +288,11 @@ async fn test_rate_limit_error() {
         .mount(&server)
         .await;
 
-    let client = Client::builder().url(server.uri()).retry_config(RetryConfig::disabled()).build().unwrap();
+    let client = Client::builder()
+        .url(server.uri())
+        .retry_config(RetryConfig::disabled())
+        .build()
+        .unwrap();
     let err = client.enqueue("test", json!({})).await.unwrap_err();
 
     match err {
@@ -308,7 +327,11 @@ async fn test_rate_limit_error_with_retry_after() {
         .mount(&server)
         .await;
 
-    let client = Client::builder().url(server.uri()).retry_config(RetryConfig::disabled()).build().unwrap();
+    let client = Client::builder()
+        .url(server.uri())
+        .retry_config(RetryConfig::disabled())
+        .build()
+        .unwrap();
     let err = client.enqueue("test", json!({})).await.unwrap_err();
 
     match err {
@@ -347,7 +370,11 @@ async fn test_rate_limit_error_with_full_headers() {
         .mount(&server)
         .await;
 
-    let client = Client::builder().url(server.uri()).retry_config(RetryConfig::disabled()).build().unwrap();
+    let client = Client::builder()
+        .url(server.uri())
+        .retry_config(RetryConfig::disabled())
+        .build()
+        .unwrap();
     let err = client.enqueue("test", json!({})).await.unwrap_err();
 
     match err {
@@ -407,7 +434,16 @@ async fn test_unstructured_error_response() {
         .mount(&server)
         .await;
 
-    let client = Client::builder().url(server.uri()).build().unwrap();
+    // This test asserts how a non-JSON (unstructured) error body is parsed,
+    // not the transport's retry behavior. 502 is retried by default for the
+    // idempotent GET /health request (see `test_rate_limit_error` and
+    // siblings above for the same reason on POST/429), so retries are
+    // disabled here to keep the mock's single expected request accurate.
+    let client = Client::builder()
+        .url(server.uri())
+        .retry_config(RetryConfig::disabled())
+        .build()
+        .unwrap();
     let err = client.health().await.unwrap_err();
 
     match err {
@@ -506,16 +542,30 @@ async fn test_pause_resume_queue() {
 async fn test_create_workflow() {
     let server = MockServer::start().await;
 
+    // Per ojs-workflows.md §11.1 / the shared OJS Go backend, the response
+    // wraps the workflow in a top-level "workflow" object, and chain steps
+    // are keyed by array position (no client-invented "depends_on" edges).
     Mock::given(method("POST"))
         .and(path("/ojs/v1/workflows"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
-            "id": "wf-001",
+        .and(body_json(json!({
+            "type": "chain",
             "name": "ETL Pipeline",
-            "state": "pending",
             "steps": [
-                {"id": "step-0", "type": "fetch", "state": "pending", "depends_on": []},
-                {"id": "step-1", "type": "transform", "state": "pending", "depends_on": ["step-0"]}
+                {"type": "fetch", "args": [{}]},
+                {"type": "transform", "args": [{}]}
             ]
+        })))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "workflow": {
+                "id": "wf-001",
+                "name": "ETL Pipeline",
+                "type": "chain",
+                "state": "running",
+                "steps": [
+                    {"id": "0", "type": "fetch", "state": "pending"},
+                    {"id": "1", "type": "transform", "state": "waiting"}
+                ]
+            }
         })))
         .expect(1)
         .mount(&server)
@@ -535,7 +585,7 @@ async fn test_create_workflow() {
         .unwrap();
 
     assert_eq!(workflow.id, "wf-001");
-    assert_eq!(workflow.state, ojs::WorkflowState::Pending);
+    assert_eq!(workflow.state, ojs::WorkflowState::Running);
     assert_eq!(workflow.steps.len(), 2);
 }
 

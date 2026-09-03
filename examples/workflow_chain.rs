@@ -95,7 +95,7 @@ async fn main() -> ojs::Result<()> {
     println!("  State: {}", status.state);
     for step in &status.steps {
         println!(
-            "  Step {}: {} (state: {}, job: {:?})",
+            "  Step {:?}: {} (state: {}, job: {:?})",
             step.id, step.job_type, step.state, step.job_id
         );
     }
@@ -106,8 +106,8 @@ async fn main() -> ojs::Result<()> {
 
     let cancelled = client.cancel_workflow(&workflow.id).await?;
     println!(
-        "\nWorkflow {} cancelled (steps cancelled: {:?})",
-        cancelled.id, cancelled.steps_cancelled
+        "\nWorkflow {} cancelled at: {:?}",
+        cancelled.id, cancelled.cancelled_at
     );
 
     Ok(())

@@ -2,7 +2,7 @@
 
 ## Project Overview
 - **SDK Name**: OJS (Open Job Spec) Rust SDK
-- **Version**: 0.2.0
+- **Version**: 0.5.0
 - **Rust Edition**: 2021
 - **Min Rust Version**: 1.75
 
@@ -614,4 +614,3 @@ async fn test_worker_executes_handler_with_context() {
     assert_eq!(attempt, 1);
 }
 ```
-

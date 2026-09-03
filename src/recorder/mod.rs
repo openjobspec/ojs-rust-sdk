@@ -1,6 +1,6 @@
 //! OJS Rust SDK Recorder — captures execution traces for job handlers.
 
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Source code location for a trace entry.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -127,10 +127,10 @@ fn chrono_now() -> String {
 /// Converts days since Unix epoch to (year, month, day).
 fn days_to_date(days: u64) -> (u64, u64, u64) {
     // Algorithm from Howard Hinnant's date library (public domain).
-    let z = days + 719468;
-    let era = z / 146097;
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
     let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
@@ -153,7 +153,10 @@ mod tests {
         assert_eq!(t.func_name, "do_work");
         assert_eq!(t.duration_ms, 42);
         assert!(t.error.is_none());
-        assert!(!t.timestamp.starts_with("1970"), "timestamp should be current, not epoch");
+        assert!(
+            !t.timestamp.starts_with("1970"),
+            "timestamp should be current, not epoch"
+        );
         assert!(t.timestamp.ends_with('Z'), "timestamp should be UTC");
     }
 
@@ -162,7 +165,8 @@ mod tests {
         let mut r = Recorder::new();
         r.record_call("fn", "", "", 1);
         r.attach_source_map("abc", "main.rs", 10);
-        let sm = r.trace()[0].source_map.as_ref().unwrap();
+        let trace = r.trace();
+        let sm = trace[0].source_map.as_ref().unwrap();
         assert_eq!(sm.git_sha, "abc");
         assert_eq!(sm.line, 10);
     }
@@ -173,5 +177,31 @@ mod tests {
         r.record_call("fn", "", "", 1);
         r.reset();
         assert!(r.is_empty());
+    }
+
+    #[test]
+    fn test_days_to_date_known_dates() {
+        // Independently computed (days-since-epoch, year, month, day)
+        // tuples (via Python's `datetime.date` arithmetic against
+        // 1970-01-01), pinning the civil-calendar conversion against a
+        // regression: the previous test coverage only checked "not epoch"
+        // and "ends with Z", which would not catch an off-by-one in this
+        // algorithm.
+        let cases: &[(u64, u64, u64, u64)] = &[
+            (0, 1970, 1, 1),
+            (10_957, 2000, 1, 1),
+            // A leap-day date, to pin leap-year handling specifically.
+            (19_782, 2024, 2, 29),
+            (19_722, 2023, 12, 31),
+            (20_254, 2025, 6, 15),
+        ];
+
+        for &(days, year, month, day) in cases {
+            assert_eq!(
+                days_to_date(days),
+                (year, month, day),
+                "days_to_date({days}) mismatch"
+            );
+        }
     }
 }

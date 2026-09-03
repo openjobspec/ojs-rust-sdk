@@ -9,7 +9,14 @@ const OJS_CONTENT_TYPE: &str = "application/openjobspec+json";
 const BASE_PATH: &str = "/ojs/v1";
 
 /// HTTP transport layer for communicating with an OJS server.
-#[derive(Clone, Debug)]
+///
+/// [`Debug`] is implemented manually (rather than derived) so the bearer
+/// `auth_token` and any secret-bearing custom header values are never
+/// rendered. This matters because `Client`/`Worker` hold a
+/// `DynTransport` (`Arc<dyn Transport>`) and derive/forward `Debug`, so a
+/// derived transport `Debug` would recursively leak the token via
+/// `format!("{client:?}")`.
+#[derive(Clone)]
 pub(crate) struct HttpTransport {
     base_url: String,
     #[cfg(feature = "reqwest-transport")]
@@ -17,6 +24,23 @@ pub(crate) struct HttpTransport {
     auth_token: Option<String>,
     headers: HashMap<String, String>,
     retry_config: RetryConfig,
+}
+
+impl std::fmt::Debug for HttpTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpTransport")
+            .field("base_url", &self.base_url)
+            // Never render the bearer token value; expose only presence.
+            .field(
+                "auth_token",
+                &self.auth_token.as_ref().map(|_| "<redacted>"),
+            )
+            // Header *values* may carry credentials (e.g. an API key), so
+            // render only the header names, never the values.
+            .field("headers", &self.headers.keys().collect::<Vec<_>>())
+            .field("retry_config", &self.retry_config)
+            .finish()
+    }
 }
 
 /// Configuration used to construct an HttpTransport from client settings.
@@ -92,7 +116,12 @@ impl HttpTransport {
             let retry_after = parse_retry_after_header(response.headers());
             let rate_limit = parse_rate_limit_headers(response.headers(), retry_after);
             let body = response.bytes().await?;
-            return Err(parse_error_response(&body, status.as_u16(), retry_after, rate_limit));
+            return Err(parse_error_response(
+                &body,
+                status.as_u16(),
+                retry_after,
+                rate_limit,
+            ));
         }
 
         let body = response.bytes().await?;
@@ -186,7 +215,7 @@ impl Transport for HttpTransport {
                             }
                             OjsError::Server(ref server_err)
                                 if self.retry_config.retry_server_errors
-                                    && matches!(server_err.http_status, 502 | 503 | 504) =>
+                                    && matches!(server_err.http_status, 502..=504) =>
                             {
                                 None
                             }
@@ -260,13 +289,16 @@ fn parse_rate_limit_headers(
     headers: &reqwest::header::HeaderMap,
     retry_after: Option<std::time::Duration>,
 ) -> Option<RateLimitInfo> {
-    let limit = headers.get("X-RateLimit-Limit")
+    let limit = headers
+        .get("X-RateLimit-Limit")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<i64>().ok());
-    let remaining = headers.get("X-RateLimit-Remaining")
+    let remaining = headers
+        .get("X-RateLimit-Remaining")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<i64>().ok());
-    let reset = headers.get("X-RateLimit-Reset")
+    let reset = headers
+        .get("X-RateLimit-Reset")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<i64>().ok());
 
@@ -282,3 +314,37 @@ fn parse_rate_limit_headers(
     })
 }
 
+#[cfg(test)]
+mod debug_redaction_tests {
+    use super::*;
+
+    #[test]
+    fn debug_redacts_auth_token_and_header_values() {
+        let mut headers = HashMap::new();
+        headers.insert("X-Api-Key".to_string(), "api-key-super-secret".to_string());
+        let transport = HttpTransport::new(
+            "https://ojs.example.com",
+            TransportConfig {
+                auth_token: Some("bearer-secret-token".to_string()),
+                headers,
+                ..Default::default()
+            },
+        );
+        let dbg = format!("{transport:?}");
+        // Neither the bearer token nor any header value may be rendered.
+        assert!(
+            !dbg.contains("bearer-secret-token"),
+            "Debug leaked auth token: {dbg}"
+        );
+        assert!(
+            !dbg.contains("api-key-super-secret"),
+            "Debug leaked header value: {dbg}"
+        );
+        // Safe/useful fields must be present: base URL, token presence, and
+        // header *names* (not values).
+        assert!(dbg.contains("HttpTransport"));
+        assert!(dbg.contains("https://ojs.example.com"));
+        assert!(dbg.contains("<redacted>"));
+        assert!(dbg.contains("X-Api-Key"));
+    }
+}

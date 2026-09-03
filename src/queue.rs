@@ -169,10 +169,16 @@ pub struct CronJobRequest {
     pub description: Option<String>,
 }
 
-/// Response for cron list endpoints.
+/// Response for cron list endpoints (`GET /cron`).
 #[derive(Debug, Deserialize)]
 pub(crate) struct CronJobsResponse {
     pub cron_jobs: Vec<CronJob>,
+}
+
+/// Response for cron registration (`POST /cron`): `{"cron_job": {...}}`.
+#[derive(Debug, Deserialize)]
+pub(crate) struct CronJobResponse {
+    pub cron_job: CronJob,
 }
 
 /// Server health status.

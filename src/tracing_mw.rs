@@ -1,6 +1,6 @@
 //! Tracing middleware for the OJS Rust SDK.
 //!
-//! Provides a [`TracingMiddleware`] that instruments job processing with
+//! Provides a [`TracingMiddleware`](crate::tracing_mw::TracingMiddleware) that instruments job processing with
 //! structured [`tracing`] spans and events. This is compatible with any
 //! `tracing` subscriber, including `tracing-opentelemetry` for bridging
 //! to OpenTelemetry collectors.

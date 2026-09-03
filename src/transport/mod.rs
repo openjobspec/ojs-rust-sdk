@@ -1,5 +1,7 @@
+#[cfg(feature = "reqwest-transport")]
 pub(crate) mod http;
 
+#[cfg(feature = "reqwest-transport")]
 pub(crate) use self::http::HttpTransport;
 
 use std::fmt::Debug;
